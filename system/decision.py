@@ -69,9 +69,9 @@ CODE_PRIORITY = CLEARANCE_ORDER + (NAME_DOB_LOCATION_MATCH, NAME_DOB_MATCH, NAME
                                    INSUFFICIENT_DATA, AMBIGUOUS_CUSTOMER_RECORD)
 
 # Which pending-clue fields can overturn which comparison.
-_DOB_CLUES = {"dob", "age", "birth", "kyc", "incorporation"}
-_NAME_CLUES = {"name", "kyc"}
-_COUNTRY_CLUES = {"country", "countries", "residence", "doc_country", "kyc",
+_DOB_CLUES = {"dob", "age", "birth", "kyc", "kyc_note", "incorporation"}
+_NAME_CLUES = {"name", "kyc", "kyc_note"}
+_COUNTRY_CLUES = {"country", "countries", "residence", "doc_country", "kyc", "kyc_note",
                   "nationality", "citizenship", "address", "place_of_birth", "location"}
 
 # Why a hit is left for review (explain.py turns these into sentences).
