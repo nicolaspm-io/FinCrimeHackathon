@@ -392,5 +392,48 @@ class DevNotesAcceptanceTest(unittest.TestCase):
         )
 
 
+class ReviewRegressionTest(unittest.TestCase):
+    """Regressions from the review of PR #10."""
+
+    def test_word_starting_with_no_is_not_a_document_number(self) -> None:
+        from customer_notes import extract_doc_number
+        for text in (
+            "Veriff completed the approval of SHAKIL AHMED on 2025-11-22, based on a Bangladeshi "
+            "driving licence noting a date of birth of 26/06/1971.",
+            "CARLOS BRIAN GARCIA passed identity screening on 2025-08-08 with Persona; documentation "
+            "included a United States passport noting a DOB of 26 February 1984.",
+            "The passport noted on file was valid.",
+            "ID normally renewed every ten years.",
+        ):
+            self.assertIsNone(extract_doc_number(text), text)
+        self.assertEqual(extract_doc_number("passport number X12345678 was approved"), "X12345678")
+        self.assertEqual(extract_doc_number("ID no. 4471-AB checked"), "4471-AB")
+        self.assertEqual(extract_doc_number("licence # FR-991"), "FR-991")
+
+    def test_reworded_failed_verifications_are_not_approved(self) -> None:
+        for text in (
+            "Identity verification for JOHN SMITH (DOB 1975-02-11) was unable to be completed by Veriff.",
+            "The identity of PAUL MARTIN (born March 3, 1970) could not be validated by Onfido.",
+            "Onfido could not confirm the identity of MARIA LOPEZ, DOB 12/03/1980, passport from Spain.",
+            "Persona check for LI WEI, DOB 1979-09-09, passport issued in Singapore: documents refused.",
+            "Veriff did not approve the national ID of OMAR ALI, DOB 05/05/1985, from Pakistan.",
+            "Verification attempt for KATE BROWN, DOB 1988-12-01, UK passport, was abandoned.",
+            "Sumsub returned a negative result for the passport of JUAN PEREZ, DOB 1966-06-16, Mexico.",
+            "The passport of TOM REED, DOB 1971-01-01, Ireland, was flagged as forged by Sumsub.",
+            "Veriff checked the national ID of EVA NOVAK (DOB 1983-03-03) but it was revoked.",
+        ):
+            self.assertNotEqual(detect_kyc_status(text), "approved", text)
+
+    def test_negated_residence_is_not_recorded(self) -> None:
+        from customer_notes import parse_residence_note
+        for text in (
+            "Customer confirmed they were not living in Italy between 2010 and 2015.",
+            "The account holder denied ever living in France from 2001 to 2004.",
+            "The user refuted claims of working in Ghana from 2011 to 2013.",
+        ):
+            facts, _ = parse_residence_note({"note_id": "N", "text": text, "created_at": "", "channel": "phone"})
+            self.assertEqual(facts, (), text)
+
+
 if __name__ == "__main__":
     unittest.main()

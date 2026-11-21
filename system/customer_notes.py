@@ -31,6 +31,16 @@ _KYC_PENDING_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Any remaining failure or negation cue means the note does not record an approved check
+# (POLICY 4). Checked after the rejected/expired/pending lists and before the broad approval
+# words, so "could not be validated" or "was unable to be completed" is never "approved".
+# On dev it fires on 0 of 22,575 kyc notes.
+_KYC_NEGATION_CUE_RE = re.compile(
+    r"\b(?:not|no|never|cannot|can't|unable|refused|abandoned|revoked|forged|fake|"
+    r"fraud\w*|tamper\w*|negative|flagged|suspended|withdrawn|cancel(?:l)?ed|error)\b",
+    re.IGNORECASE,
+)
+
 _KYC_APPROVED_RE = re.compile(
     r"\b(?:approved|verified|confirmed|confirms|confirming|cleared|passed|pass|passing|"
     r"validated|validates|accepted|authenticated|finalized|finalised|completed|complete|"
@@ -52,9 +62,12 @@ _DOB_AFTER_RE = re.compile(
     re.IGNORECASE,
 )
 
+# "no" must be a whole word (or "no."), and the captured value must contain a digit: without
+# both, "licence noting a date of birth" was read as document number "ting", and two unrelated
+# customers sharing that fake number were merged into one person (POLICY 3).
 _DOC_NUM_RE = re.compile(
-    r"\b(?:document|passport|id|licence|license)\s+(?:number|no\.?|#)\s*[:\-]?\s*"
-    r"([A-Za-z0-9][A-Za-z0-9\-]{3,24})\b",
+    r"\b(?:document|passport|id|licence|license)\s+(?:number|no\.|no\b|#)\s*[:\-#]?\s*"
+    r"([A-Za-z0-9\-]*\d[A-Za-z0-9\-]*)\b",
     re.IGNORECASE,
 )
 
@@ -88,7 +101,10 @@ _NEGATION_RE = re.compile(
     r"did\s+not\s+(?:live|reside|work|stay)|"
     r"has\s+not\s+(?:lived|resided|worked)|"
     r"not\s+a\s+resident|denied\s+(?:living|residing|any\s+residence)|"
-    r"no\s+residence|not\s+lived)\b",
+    r"no\s+residence|not\s+lived|"
+    # broader clause negation: "were not living in", "denied ever living", "refuted claims of"
+    r"not|never|neither|nor|denied|denies|deny|refuted|refutes|refute|disputed|disputes|"
+    r"falsely|no\s+residency)\b",
     re.IGNORECASE,
 )
 
@@ -182,6 +198,15 @@ class ParsedKycNote:
     pending_clues: tuple[Fact, ...] = ()
 
 
+def extract_doc_number(text: str) -> str | None:
+    """Document number written in a KYC note ("passport number X12345678"), or None."""
+    match = _DOC_NUM_RE.search(text or "")
+    if not match:
+        return None
+    value = match.group(1).strip("-")
+    return value if 4 <= len(value) <= 25 else None
+
+
 def detect_kyc_status(text: str) -> str:
     """Determine verification status conservatively (rejected/expired beat approved)."""
     if _KYC_REJECTED_RE.search(text):
@@ -190,6 +215,8 @@ def detect_kyc_status(text: str) -> str:
         return "expired"
     if _KYC_PENDING_RE.search(text):
         return "unknown"
+    if _KYC_NEGATION_CUE_RE.search(text):
+        return "rejected"
     if _KYC_APPROVED_RE.search(text):
         return "approved"
     return "unknown"
@@ -383,8 +410,7 @@ def parse_kyc_note(
     doc_country = _extract_kyc_country(text)
     verified_name = _extract_kyc_name(text)
 
-    doc_match = _DOC_NUM_RE.search(text)
-    doc_number = doc_match.group(1).strip() if doc_match else None
+    doc_number = extract_doc_number(text)
 
     pending_clues: list[Fact] = []
 

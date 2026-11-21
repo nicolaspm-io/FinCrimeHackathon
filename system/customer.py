@@ -17,7 +17,7 @@ try:
         ParsedDate,
         VerifiedIdentity,
     )
-    from .customer_notes import ParsedKycNote, parse_customer_notes
+    from .customer_notes import ParsedKycNote, extract_doc_number, parse_customer_notes, parse_kyc_note
     from .data import (
         ScreeningDataset,
         extract_year_hint,
@@ -37,7 +37,7 @@ except ImportError:
         ParsedDate,
         VerifiedIdentity,
     )
-    from customer_notes import ParsedKycNote, parse_customer_notes
+    from customer_notes import ParsedKycNote, extract_doc_number, parse_customer_notes, parse_kyc_note
     from data import (
         ScreeningDataset,
         extract_year_hint,
@@ -305,9 +305,29 @@ class CustomerResolver:
         self.llm_fallback = llm_fallback
         self.variants = names.build_variants(dataset.name_variants_raw)
         self.graph = CustomerGraph(dataset)
+        self._link_note_documents()
         self._email_notes_cache: dict[
             str, tuple[tuple[ParsedKycNote, ...], tuple[Fact, ...], tuple[Fact, ...]]
         ] = {}
+
+    def _link_note_documents(self) -> None:
+        """Union records whose approved KYC notes carry the same document number (POLICY 3).
+
+        Done once, over every note, before any alert is resolved, so the identity graph is a
+        pure function of the data folder and never depends on which alerts were resolved first.
+        Only a cheap regex pre-filter runs over all notes; matching notes are fully parsed.
+        """
+        for email in sorted(self.dataset.notes_by_email):
+            for note in self.dataset.get_notes_for_email(email):
+                if str(note.get("channel") or "").strip().lower() != "kyc":
+                    continue
+                text = str(note.get("text") or "")
+                if not extract_doc_number(text):
+                    continue
+                parsed = parse_kyc_note(note)
+                if parsed.status == "approved" and parsed.doc_number:
+                    for cid in self.dataset.get_customers_by_email(email):
+                        self.graph.link_approved_document(cid, parsed.doc_number)
 
     def _get_parsed_notes_for_email(
         self, raw_email: str | None
@@ -325,11 +345,9 @@ class CustomerResolver:
                 tuple[ParsedKycNote, ...], tuple[Fact, ...], tuple[Fact, ...]
             ] = ((), (), ())
         else:
+            # Note-derived document links are built once in _link_note_documents, before any
+            # resolution; linking here as well would make clusters depend on alert order.
             result = parse_customer_notes(raw_notes, llm_fallback=self.llm_fallback)
-            for kyc_note in result[0]:
-                if kyc_note.status == "approved" and kyc_note.doc_number:
-                    for cid in self.dataset.get_customers_by_email(key):
-                        self.graph.link_approved_document(cid, kyc_note.doc_number)
         self._email_notes_cache[key] = result
         return result
 

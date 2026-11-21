@@ -558,5 +558,22 @@ class DevCustomerAcceptanceTest(unittest.TestCase):
         )
 
 
+class NoteDocumentLinkRegressionTest(unittest.TestCase):
+    """Review of PR #10: note-derived document links must be real numbers and order-free."""
+
+    def test_dev_fake_doc_number_does_not_merge_strangers(self) -> None:
+        dev = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "dev")
+        if not os.path.isdir(dev):
+            self.skipTest("dev data folder not present")
+        from customer import CustomerResolver
+        ds = load_dataset(dev)
+        res = CustomerResolver(ds)
+        shakil = ds.get_customers_by_email("shakil.ahmed4857@webmail.example")
+        carlos = ds.get_customers_by_email("carlos.garcia8232@webmail.example")
+        for email in ("shakil.ahmed4857@webmail.example", "carlos.garcia8232@webmail.example"):
+            res._get_parsed_notes_for_email(email)
+        self.assertNotIn(carlos[0], res.graph.cluster_of(shakil[0]))
+
+
 if __name__ == "__main__":
     unittest.main()
