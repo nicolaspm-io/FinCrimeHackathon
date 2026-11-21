@@ -1,0 +1,67 @@
+name: linux-posix-check
+
+# Runs the PUBLISHED submission (nicolaspm-io/fincrime-submission) on Linux against the
+# dev data with practice_labels.jsonl removed, from an outside working directory.
+on:
+  push:
+    branches: [chore/linux-check]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  posix:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.9", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: dev-repo
+      - uses: actions/checkout@v4
+        with:
+          repository: nicolaspm-io/fincrime-submission
+          path: submission
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+
+      - name: Repo hygiene (mode 100755, LF, no dev data)
+        working-directory: submission
+        run: |
+          git ls-files -s system/run | grep -q '^100755' && echo "system/run is 100755"
+          test -x system/run
+          if grep -rlI $'\r' system output; then echo "CRLF found"; exit 1; fi
+          if git log --all --name-only --format= | grep -E '^(dev|tests|tools)/|\.xlsx$|\.env'; then echo "forbidden files"; exit 1; fi
+          head -1 system/run
+
+      - name: Prepare data folder without practice labels
+        run: |
+          mkdir -p "$RUNNER_TEMP/data" "$RUNNER_TEMP/cwd"
+          cp dev-repo/dev/*.jsonl dev-repo/dev/name_variants.json "$RUNNER_TEMP/data/"
+          rm -f "$RUNNER_TEMP/data/practice_labels.jsonl"
+          ls "$RUNNER_TEMP/data"
+
+      - name: Run system/run 3x from an outside working directory
+        working-directory: ${{ runner.temp }}/cwd
+        env:
+          LC_ALL: C
+        run: |
+          python3 --version
+          for i in 1 2 3; do
+            start=$(date +%s)
+            PYTHONHASHSEED=$RANDOM "$GITHUB_WORKSPACE/submission/system/run" ../data "out$i.jsonl"
+            echo "run $i: $(( $(date +%s) - start ))s, $(wc -l < out$i.jsonl) lines"
+          done
+          cmp out1.jsonl out2.jsonl && cmp out1.jsonl out3.jsonl && echo "3/3 runs byte-identical"
+          cmp out1.jsonl "$GITHUB_WORKSPACE/submission/output/dev.jsonl" && echo "matches published output/dev.jsonl"
+
+      - name: validate.py (schema + practice score)
+        run: |
+          python3 dev-repo/validate.py --data "$RUNNER_TEMP/data" --output "$RUNNER_TEMP/cwd/out1.jsonl"
+          python3 dev-repo/validate.py --data dev-repo/dev --output "$RUNNER_TEMP/cwd/out1.jsonl" --score dev-repo/dev/practice_labels.jsonl | tee score.txt
+          grep -q "0 unsafe clearances" score.txt
