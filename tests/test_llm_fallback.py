@@ -415,7 +415,7 @@ class PostValidationGateTest(unittest.TestCase):
     def test_code_side_age_math_and_country_territory_normalization(self) -> None:
         status, payload, _, err = validate_extraction(
             "sr_facts",
-            "In June 2021, the 37-year-old Dutch official appeared in court.",
+            "In June 2021, the 37-year-old Dutch official, a politically exposed person, appeared in court.",
             {
                 "age": 37,
                 "birth_date": None,
@@ -423,6 +423,10 @@ class PostValidationGateTest(unittest.TestCase):
                 "country": "Dutch",
                 "subject": "hit",
                 "evidence_quote": "In June 2021, the 37-year-old Dutch official",
+            },
+            context={
+                "category_phrase": "a politically exposed person",
+                "hit_countries": ["Netherlands"],
             },
         )
         self.assertIsNone(err)
@@ -469,6 +473,129 @@ class PostValidationGateTest(unittest.TestCase):
         self.assertIsNone(
             re.search(r"\b(?:H|CUS|NOTE|A)-[0-9A-Fa-f]{4,}\b", source)
         )
+
+
+class PolicyGateRegressionTest(unittest.TestCase):
+    """Regression tests for the review of PR #8: the gates must enforce POLICY 4 and 5 in code,
+    not trust the model's judgement."""
+
+    PEP = "a politically exposed person"
+
+    def _sr(self, text, *, age, ref, country, hit_countries=("Brazil",), phrase=PEP):
+        return validate_extraction(
+            "sr_facts",
+            text,
+            {"age": age, "birth_date": None, "reference_date": ref, "country": country,
+             "subject": "hit", "evidence_quote": text},
+            context={"category_phrase": phrase, "hit_countries": list(hit_countries)},
+        )
+
+    def test_sr_namesake_with_wrong_listing_or_country_is_absent(self) -> None:
+        # Wrong kind of listing and a country not tied to the hit: a namesake.
+        s1, p1, _, e1 = self._sr(
+            "In August 2025, 79 year old MARCOS ROBERTO COSTA, named in adverse media in "
+            "United Kingdom, appeared in a published list.", age=79, ref="August 2025",
+            country="United Kingdom")
+        self.assertEqual((s1, e1), (FactStatus.ABSENT, "listing_phrase_absent"))
+        self.assertEqual(p1, {})
+        # Right phrase, wrong country.
+        s2, _, _, e2 = self._sr(
+            "In May 2019, MARCOS ROBERTO COSTA, 33, is a politically exposed person in Canada.",
+            age=33, ref="May 2019", country="Canada")
+        self.assertEqual((s2, e2), (FactStatus.ABSENT, "no_hit_country_in_snippet"))
+        # No country and no phrase at all.
+        s3, _, _, _ = self._sr("Maria Lopez, 44, a nurse, was interviewed in June 2013.",
+                               age=44, ref="June 2013", country=None)
+        self.assertEqual(s3, FactStatus.ABSENT)
+        # Missing context is never treated as a match.
+        s4, _, _, e4 = self._sr("MARCOS ROBERTO COSTA, 33, a politically exposed person in Brazil.",
+                                age=33, ref="2019", country="Brazil", phrase="")
+        self.assertEqual((s4, e4), (FactStatus.ABSENT, "missing_category_phrase"))
+
+    def test_sr_qualifying_snippet_is_verified_and_country_must_be_tied(self) -> None:
+        text = ("May 2019 news reports profiled 33 year old MARCOS ROBERTO COSTA, who is a "
+                "politically exposed person in Brazil.")
+        st, p, _, err = self._sr(text, age=33, ref="May 2019", country="Brazil")
+        self.assertIsNone(err)
+        self.assertEqual(st, FactStatus.VERIFIED)
+        self.assertEqual(p["possible_years"], [1985, 1986])
+        self.assertEqual(p["country"], "Brazil")
+        # Model names a second country from the snippet that is not tied to the hit.
+        text2 = text.replace("in Brazil.", "in Brazil, after years in Portugal.")
+        st2, _, _, err2 = self._sr(text2, age=33, ref="May 2019", country="Portugal")
+        self.assertEqual((st2, err2), (FactStatus.PENDING_CLUE, "country_not_tied_to_hit"))
+
+    def test_extract_sr_facts_makes_no_call_for_non_qualifying_snippet(self) -> None:
+        calls = []
+        client = OpenRouterClient(api_key="k", http_opener=lambda *a, **kw: calls.append(1),
+                                  sleep_fn=lambda _: None)
+        res = client.extract_sr_facts("Eva Lopez, 33, a taxi driver in Netherlands.", "SR-X",
+                                      category_phrase=self.PEP, hit_countries=("Spain",))
+        self.assertEqual(res.status, FactStatus.ABSENT)
+        self.assertEqual(calls, [])
+
+    def test_kyc_dob_must_equal_the_date_in_the_quote(self) -> None:
+        text = "AMAKA AFOLABI's identity was confirmed via Veriff on 2024-04-26. DOB recorded as 10/08/1988."
+        def kyc(dob):
+            return validate_extraction("kyc_note", text, {"status": "approved", "verified_dob": dob,
+                                                          "evidence_quote": text})
+        s_ok, p_ok, _, _ = kyc("1988-08-10")
+        self.assertEqual(s_ok, FactStatus.VERIFIED)
+        self.assertEqual(p_ok["verified_dob"], "1988-08-10")
+        for wrong in ("1988-10-08", "1988-01-01", "10 October 1988"):
+            s, _, _, e = kyc(wrong)
+            self.assertEqual((s, e), (FactStatus.PENDING_CLUE, "ungrounded_dob"), wrong)
+
+    def test_hit_birth_date_parts_must_match_quote(self) -> None:
+        text = "Subject was born on 5 May 1980 in Lagos."
+        def hit(bd):
+            return validate_extraction("hit_p1_dob", text, {"birth_date": bd, "age": None,
+                                       "reference_date": None, "subject": "hit", "evidence_quote": text})
+        self.assertEqual(hit("1980-05-05")[0], FactStatus.VERIFIED)
+        self.assertEqual(hit("1980")[0], FactStatus.VERIFIED)
+        self.assertEqual(hit("1980-06-05")[3], "ungrounded_birth_date")
+
+    def test_reworded_failed_verifications_never_verified_as_approved(self) -> None:
+        fails = [
+            "Onfido could not confirm the identity of MARIA LOPEZ, DOB 12/03/1980, passport from Spain.",
+            "Identity verification for JOHN SMITH (DOB 1975-02-11) was unable to be completed by Veriff.",
+            "Sumsub flagged the driving licence of ANA SILVA, born 4 June 1990, Portugal, as a mismatch.",
+            "Persona check for LI WEI, DOB 1979-09-09: verification incomplete, documents refused.",
+            "Veriff did not approve the national ID of OMAR ALI, DOB 05/05/1985, from Pakistan.",
+            "The identity of PAUL MARTIN (born March 3, 1970) could not be validated by Onfido.",
+            "Verification attempt for KATE BROWN, DOB 1988-12-01, UK passport, was abandoned.",
+            "Sumsub returned a negative result for the passport of JUAN PEREZ, DOB 1966-06-16, Mexico.",
+        ]
+        for text in fails:
+            s, _, _, e = validate_extraction("kyc_note", text, {"status": "approved", "evidence_quote": text})
+            self.assertEqual((s, e), (FactStatus.PENDING_CLUE, "kyc_negative_contradiction"), text)
+
+    def test_negated_or_visited_residence_rejected(self) -> None:
+        for text, country in [
+            ("Customer confirmed they were not living in Italy between 2010 and 2015.", "Italy"),
+            ("The account holder denied ever living in France.", "France"),
+            ("No residency in Nigeria was reported for 2012 to 2014.", "Nigeria"),
+            ("Customer clarified he was only visiting Brazil, not residing there, in 2019.", "Brazil"),
+            ("The user refuted claims of working in Ghana from 2011 to 2013.", "Ghana"),
+            ("The client has never resided in Spain.", "Spain"),
+        ]:
+            s, _, _, _ = validate_extraction("residence_note", text, {"lived_countries": [
+                {"country": country, "subject": "customer", "evidence_quote": text}]})
+            self.assertEqual(s, FactStatus.PENDING_CLUE, text)
+
+    def test_trimmed_quote_cannot_hide_third_party_or_other_reference_year(self) -> None:
+        s, _, _, e = validate_extraction(
+            "hit_p1_dob", "X was born in 1960 and her son, aged 30, was charged in 2001.",
+            {"age": 30, "reference_date": "2001", "subject": "hit",
+             "evidence_quote": "aged 30, was charged in 2001"})
+        self.assertEqual((s, e), (FactStatus.PENDING_CLUE, "third_party_or_negated"))
+        s2, _, _, e2 = validate_extraction(
+            "hit_p1_dob",
+            "Formal charges were brought against X, aged 30, in November 1998. "
+            "Member of Congress (July 22, 2019 - 2027).",
+            {"age": 30, "reference_date": "2019-07-22", "subject": "hit",
+             "evidence_quote": "Formal charges were brought against X, aged 30"})
+        self.assertEqual((s2, e2), (FactStatus.PENDING_CLUE, "ungrounded_reference_date"))
 
 
 if __name__ == "__main__":

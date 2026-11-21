@@ -43,7 +43,7 @@ except ImportError:
 
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 DEFAULT_MODEL = "baidu/ernie-5.5-flash-preview:free"
-PROMPT_VERSION = "v1"
+PROMPT_VERSION = "v2"
 
 _THINK_RE = re.compile(r"<think>.*?</think>", re.IGNORECASE | re.DOTALL)
 _FENCE_RE = re.compile(r"```(?:json)?\s*(.*?)\s*```", re.IGNORECASE | re.DOTALL)
@@ -64,12 +64,29 @@ _THIRD_PARTY_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Any failure or negation cue blocks an "approved" reading (POLICY 4: rejected or expired
+# checks are not evidence). Deliberately broad: free text in the unseen set is reworded, and a
+# false block only costs a fact (PENDING_CLUE), while a false accept invents a verified identity.
+# On dev it fires on 0 of 22,575 kyc notes.
 _KYC_NEGATIVE_RE = re.compile(
-    r"\b(?:rejected|failed|expired|declined|denied|unverified|"
-    r"invalid|unsuccessful|not\s+approved|not\s+verified|did\s+not\s+pass|"
-    r"could\s+not\s+verify|no\s+longer\s+valid)\b",
+    r"\b(?:not|no|never|cannot|can't|unable|fail(?:ed|ure|s)?|reject(?:ed|ion)?|expired|"
+    r"declined|denied|refused|abandoned|incomplete|mismatch\w*|negative|invalid|unverified|"
+    r"unsuccessful|pending|on\s+hold|under\s+review|suspended|fraud\w*|forged|tamper\w*|"
+    r"discrepan\w*|error)\b",
     re.IGNORECASE,
 )
+
+# Residence-specific negation, checked on the whole sentence that holds the quote. Broader than
+# _NEGATION_RE because a negated or merely visited country must never be recorded as lived-in.
+# On dev it fires on 0 of 2,960 residence notes.
+_RESIDENCE_NEGATION_RE = re.compile(
+    r"\b(?:not|no|never|neither|nor|denied|denies|deny|refuted|refutes|refute|disputed|disputes|"
+    r"false(?:ly)?|claims?\s+of|only\s+visit\w*|visiting|visited|holiday|vacation|transit|trip|"
+    r"travel(?:l?ed|l?ing)?)\b",
+    re.IGNORECASE,
+)
+
+_SENTENCE_END_RE = re.compile(r"[.;!?\n]")
 
 _SYSTEM_PROMPT = (
     "You are a strict compliance information extractor. "
@@ -138,6 +155,69 @@ def _is_country_grounded(
     if code2 and re.search(rf"(?<![a-zA-Z]){re.escape(code2)}(?![a-zA-Z])", f"{text} {quote}"):
         return True
     return False
+
+
+def _enclosing_sentence(quote: str, text: str) -> str:
+    """The full sentence(s) of text that contain the quote (falls back to the quote itself).
+
+    Negation and third-party cues are checked on this span, so a quote trimmed to leave out
+    "her son" or "never" cannot slip past the gates.
+    """
+    idx = text.find(quote)
+    if idx < 0:
+        idx = text.lower().find(quote.strip().lower())
+    if idx < 0:
+        return quote
+    start = idx
+    while start > 0 and not _SENTENCE_END_RE.match(text[start - 1]):
+        start -= 1
+    end = idx + len(quote)
+    while end < len(text) and not _SENTENCE_END_RE.match(text[end]):
+        end += 1
+    return text[start:end]
+
+
+def _grounded_date(raw_value: Any, quote: str, mode: str) -> tuple[Any, ...] | None:
+    """Return the code-parsed alternatives of the date span in the quote that the model's value
+    names, or None.
+
+    Every part the model gives (year, month, day) must equal a reading the date parser itself
+    takes from the quote, so a swapped day/month (10/08/1988 read as 1988-10-08 in a day-first
+    source) or an invented day is rejected. The returned dates come from the quote, never from
+    the model, and keep any genuine ambiguity of the source (hit slash dates).
+    """
+    model_alts = dates.parse_date_alternatives(raw_value, mode)
+    if not model_alts:
+        return None
+    for _start, _end, _raw, quote_alts in dates.find_dates(quote, mode):
+        for q in quote_alts:
+            for m in model_alts:
+                if m.year == q.year and m.month in (None, q.month) and m.day in (None, q.day) \
+                        and not (m.day is not None and m.month is None):
+                    return tuple(quote_alts)
+    return None
+
+
+def sr_snippet_qualifies(
+    text: str, category_phrase: str, hit_countries: Iterable[str]
+) -> tuple[bool, tuple[str, ...], str | None]:
+    """POLICY 5: a search result is about the hit only if it describes the same kind of listing
+    (the exact phrase for the hit's category) in a country tied to the hit.
+
+    Both checks are done in code: the phrase and the dated-report form are worded the same in
+    the unseen set. Returns (qualifies, shared countries, reason when it does not qualify).
+    """
+    if not isinstance(category_phrase, str) or not category_phrase.strip():
+        return False, (), "missing_category_phrase"
+    if _norm_ws(category_phrase) not in _norm_ws(text or ""):
+        return False, (), "listing_phrase_absent"
+    tied = {c for c in (_normalize_country_value(x) for x in (hit_countries or ())) if c}
+    if not tied:
+        return False, (), "no_hit_countries"
+    shared = tuple(sorted(tied & set(countries.country_mentions(text))))
+    if not shared:
+        return False, (), "no_hit_country_in_snippet"
+    return True, shared, None
 
 
 def _build_prompt(
@@ -246,8 +326,8 @@ def _validate_kyc_note(
         if not isinstance(raw_dob, str) or not raw_dob.strip():
             raw_dob = None
         else:
-            alts = dates.parse_date_alternatives(raw_dob, dates.BANK)
-            if not alts or not _contains_number(quote, alts[0].year):
+            alts = _grounded_date(raw_dob, quote, dates.BANK)
+            if not alts or len(alts) != 1:
                 return FactStatus.PENDING_CLUE, {}, None, "ungrounded_dob"
             dob_iso = alts[0].iso_str
 
@@ -316,7 +396,8 @@ def _validate_residence_note(
         if subject != "customer":
             saw_rejected_entry = True
             continue
-        if _NEGATION_RE.search(quote) or _THIRD_PARTY_RE.search(quote):
+        sentence = _enclosing_sentence(quote, text)
+        if _RESIDENCE_NEGATION_RE.search(sentence) or _THIRD_PARTY_RE.search(sentence):
             saw_rejected_entry = True
             continue
         raw_country = entry.get("country")
@@ -352,10 +433,20 @@ def _validate_temporal_hit_payload(
     if not _is_verbatim_quote(quote, text):
         return FactStatus.PENDING_CLUE, {}, None, "missing_or_non_verbatim_quote"
 
+    shared_countries: tuple[str, ...] = ()
+    if task == TASK_SR_FACTS:
+        ok, shared_countries, why = sr_snippet_qualifies(
+            text, str(context.get("category_phrase") or ""), context.get("hit_countries") or ()
+        )
+        if not ok:
+            # Not about the hit under POLICY 5: no evidence at all, whatever the model says.
+            return FactStatus.ABSENT, {}, None, why
+
     subject = payload.get("subject")
     if subject != "hit":
         return FactStatus.PENDING_CLUE, {}, quote, "non_hit_subject"
-    if _NEGATION_RE.search(quote) or _THIRD_PARTY_RE.search(quote):
+    sentence = _enclosing_sentence(quote, text)
+    if _NEGATION_RE.search(sentence) or _THIRD_PARTY_RE.search(sentence):
         return FactStatus.PENDING_CLUE, {}, quote, "third_party_or_negated"
 
     possible_years: list[int] = []
@@ -367,8 +458,8 @@ def _validate_temporal_hit_payload(
         if not isinstance(raw_birth_date, str) or not raw_birth_date.strip():
             return FactStatus.PENDING_CLUE, {}, quote, "invalid_birth_date"
         birth_date_str = raw_birth_date.strip()
-        alts = dates.parse_date_alternatives(birth_date_str, dates.HIT)
-        if not alts or not _contains_number(quote, alts[0].year):
+        alts = _grounded_date(birth_date_str, quote, dates.HIT)
+        if not alts:
             return FactStatus.PENDING_CLUE, {}, quote, "ungrounded_birth_date"
         for alt in alts:
             if alt.year not in possible_years:
@@ -390,9 +481,7 @@ def _validate_temporal_hit_payload(
         ref_alts = dates.parse_date_alternatives(raw_ref.strip(), dates.HIT)
         if not ref_alts:
             return FactStatus.PENDING_CLUE, {}, quote, "invalid_reference_date"
-        ref_in_text = _contains_number(quote, ref_alts[0].year) or _contains_number(
-            text, ref_alts[0].year
-        )
+        ref_in_text = _contains_number(sentence, ref_alts[0].year)
         ctx_ref = str(context.get("reference_date") or "")
         ref_from_ctx = bool(ctx_ref) and _contains_number(ctx_ref, ref_alts[0].year)
         if not (ref_in_text or ref_from_ctx):
@@ -412,6 +501,10 @@ def _validate_temporal_hit_payload(
             raw_country, norm_country, text, quote
         ):
             return FactStatus.PENDING_CLUE, {}, quote, "hallucinated_country"
+        if norm_country is not None and norm_country not in shared_countries:
+            return FactStatus.PENDING_CLUE, {}, quote, "country_not_tied_to_hit"
+        if norm_country is None:
+            norm_country = shared_countries[0]
 
     if not possible_years and norm_country is None:
         return FactStatus.PENDING_CLUE, {}, quote, "no_extractable_fact"
@@ -428,6 +521,7 @@ def _validate_temporal_hit_payload(
     }
     if task == TASK_SR_FACTS:
         validated["country"] = norm_country
+        validated["shared_countries"] = list(shared_countries)
     return FactStatus.VERIFIED, validated, quote, None
 
 
@@ -716,6 +810,16 @@ class OpenRouterClient:
     ) -> ExtractionResult:
         """Extract age, birth date, reference date, and country from a search snippet."""
         countries_tuple = tuple(hit_countries)
+        ok, _shared, why = sr_snippet_qualifies(text, category_phrase, countries_tuple)
+        if not ok:
+            return ExtractionResult(
+                task=TASK_SR_FACTS,
+                source_id=source_id,
+                status=FactStatus.ABSENT,
+                model_id=self.model_id,
+                prompt_version=PROMPT_VERSION,
+                error=why,
+            )
         return self._run_task(
             TASK_SR_FACTS,
             text,
