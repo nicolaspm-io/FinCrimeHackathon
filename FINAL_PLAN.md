@@ -9,11 +9,11 @@
 >    git checkout main && git pull origin main
 >    git checkout -b feat/<track-name>
 >    ```
-> 2. **Simultaneous work via `git worktree` and exclusive file ownership:** When running multiple agents or parallel tracks simultaneously, give each branch its own `git worktree` (or separate clone) and modify **only** the files assigned to that track in Section 7. Maintain a lightweight claim table in team tracking (owner, branch, worktree, files, status) to avoid duplicated work.
+> 2. **Simultaneous work via `git worktree` and exclusive file ownership:** In Waves 0–2, parallel tracks used separate `git worktree` checkouts with exclusive file ownership. For the solo post-Wave-2 finish, work sequentially on a single branch (`feat/final-delivery`) from `main`.
 > 3. **Integration exclusively through Pull Requests (`main`):** After passing the track's acceptance checks, push the branch (`git push -u origin <branch>`) and open a Pull Request targeting `main`. State clearly: scope, files touched, commands run, observed test outputs, known limitations, and any impact on decision costs or unsafe clearances.
 > 4. **UNBREAKABLE RULE — AI NEVER APPROVES OR MERGES PRs:**
 >    - AI agents are **strictly forbidden** from approving, accepting, auto-merging, or merging any PR (`gh pr merge`, `gh pr review --approve`, `git merge` into `main`, or `git push origin main`).
->    - **Only a human teammate reviews, approves, and merges PRs into `main`.** In our 2-person team, Person 1 reviews/merges Person 2's PRs and Person 2 reviews/merges Person 1's PRs.
+>    - **Only a human reviews, approves, and merges PRs into `main`.** In Waves 0–2, teammates cross-reviewed/merged PRs; for the solo post-Wave-2 finish, the human owner reviews and merges their own PR into `main` (AI still never approves or merges PRs).
 >    - While waiting on human review, the AI may start an independent lookahead branch in a separate `git worktree`. Once a dependency merges into `main`, rebase/update the consuming branch and re-run tests against the real merged modules.
 > 5. **Data Hygiene & Clean Public Submission Repository:**
 >    - Never commit `OPENROUTER_API_KEY`, `.env` files, or API response caches.
@@ -34,12 +34,12 @@ The goal is to deliver a POSIX CLI `system/run <data folder> <output file>` that
 | **2. Fallback Activation & Clue Safety** | **Pending-Clue Epistemic Safety + Always-On Fallback:** Track every fact as `ABSENT`, `PENDING_CLUE`, or `VERIFIED`. `PENDING_CLUE` blocks only clearances/decisions that could flip if resolved (never blocks proven independent contradictions like `DECEASED` or `ENTITY_TYPE_MISMATCH`). Whenever `OPENROUTER_API_KEY` is set, all 4 OpenRouter fallback tasks are active by default (no ablation gate blocking activation), protected by strict deterministic post-validation. Missing key / HTTP 429 / timeout / invalid JSON degrades cleanly to `PENDING_CLUE` / `unknown`. | Prevents an unparsed free-text clue from silently turning into a `-60` unsafe clearance while remaining active out of the box. |
 | **3. OpenRouter Model & Guardrails** | **Pinned Model `baidu/ernie-5.5-flash-preview:free`** (env-overridable via `OPENROUTER_MODEL`). Called exclusively via OpenRouter (`https://openrouter.ai/api/v1/chat/completions`) using stdlib `urllib.request` and `OPENROUTER_API_KEY`. Pin `temperature=0`, `top_p=1`, `seed=42` (where supported), structured JSON output, disable/cap extraneous reasoning tokens if enabled, record `model_id` + `prompt_version`, use a thread-safe per-run in-memory `SHA-256` cache, `429` exponential backoff respecting `Retry-After`, `15s` request timeout, deterministic request ordering, and hard call/token/wall-clock caps (`< 30 min`). | Zero external dependencies, zero token spend on free tier, deterministic caching within runs, and explicit resilience against `:free` RPM/daily quota limits. |
 | **4. `H-2C6B2E` / `H-FE02A6` & Slash Dates** | **Dual-Mode Slash Dates + P1 Key-Value vs `SR` Conflict Flag:** Parse bank dates (`bank_internal`) as `DD/MM/YYYY`; parse hit dates (`hit_provider`) using `>12` disambiguation and preserve **both** `(Y, M1, D1)` and `(Y, M2, D2)` when both parts `<= 12`. For hits containing a key-value `DOB:` line in P1 **and** an attributed `search_results` entry: parse **both**. If the customer contradicts both -> `DOB_MISMATCH`; if both agree -> agreement (`H-FE02A6`); if P1 key-value and `SR` **conflict** relative to the customer (`H-2C6B2E`) -> flag the conflict and emit **`REVIEW / INSUFFICIENT_DATA`**. | Eliminates the `-60` unsafe-clearance trap on `H-2C6B2E` (max cost `3` if mismatch) while preserving safe clearance when both sources agree it is a different person. |
-| **5. Validation & Anti-Overfitting** | **Non-Blocking Integration Milestone + Anti-Overfitting Suite:** Do not block parallel development on `50/50 customer_record_id`, but verify `customer_record_id` accuracy and 100% indexed-vs-brute-force linkless recall at integration **before** tuning decision rules. Hard gates: `0` `validate.py` errors, `0` observed unsafe clearances, `5/5` identical `(hit_id, decision, reason_code)` across 5 empty-cache runs, `< 30 min`. Include ~40–50 human-verified synthetic paraphrases, invariance tests (row shuffle, ID rename, `practice_labels.jsonl` removed), all 11 reason codes, and an unlabeled risk audit. Never treat the 50 inspected practice labels as an unseen holdout. | Avoids both premature pipeline blockage and false confidence from overfitting `dev/practice_labels.jsonl`. |
-| **6. Code Layout & Module Ownership** | **Flatter Codex Layout inside `system/` + Track J:** `system/run`, `main.py`, `contracts.py`, `data.py`, `names.py`, `dates.py`, `countries.py`, `customer.py`, `customer_notes.py`, `watchlist.py`, `profile_text.py`, `decision.py`, `explain.py`, `llm_fallback.py`, `README.md`. Outside `system/`: `tests/`, `tools/` (`eval_dev.py`, `repro_check.py`, `audit_unlabeled.py`), `demo/viewer.html`, `output/dev.jsonl`. Customer domain owns `customer_notes.py`; Watchlist domain owns `profile_text.py`. | Clean separation between customer and watchlist text parsing, minimal package nesting, and zero cross-track merge conflicts. |
-| **7. UX & Creativity Deliverable** | **Planned Phase 3 Track (`feat/demo-viewer` -> `demo/viewer.html`):** Zero-dependency static HTML/JS viewer outside `system/` inspecting `output/dev.jsonl` (prototyped earlier on synthetic JSONL, wired to final output in Phase 3). | Directly addresses `Creativity` and `UX` judging criteria in [Aditional.md](Aditional.md) without touching `system/`. |
+| **5. Validation & Anti-Overfitting** | **Strictly Necessary Solo Gates (`tools/` Only):** Rely on existing `tools/` without authoring new standalone test frameworks: `tools/eval_dev.py --run` (`0` `validate.py` errors, `0` unsafe clearances, `record_by_link` check, escalating to brute-force linkless scan only if `none`-link alerts show misses), `tools/audit_unlabeled.py --sample 0` (high-risk Sections 1–6 only), and `tools/repro_check.py --runs 5 --hide-labels` (`5/5` identical `(hit_id, decision, reason_code)`, `PYTHONHASHSEED`, empty `cwd`, `practice_labels.jsonl` removed, `< 30 min`). Verify live OpenRouter directly on `dev/` (and run pre-built paraphrase inputs only if already executable as-is). Never treat the 50 inspected practice labels as an unseen holdout. | Cuts every non-essential test harness while keeping 100% of the gates protecting `-60` unsafe clearances, the 80% Unseen Set, and 10% Reproducibility. |
+| **6. Code Layout & Module Ownership** | **Flatter Codex Layout inside `system/`:** `system/run`, `main.py`, `contracts.py`, `data.py`, `names.py`, `dates.py`, `countries.py`, `customer.py`, `customer_notes.py`, `watchlist.py`, `profile_text.py`, `decision.py`, `explain.py`, `llm_fallback.py`, `README.md`. Outside `system/`: `tests/` (Waves 0–2 suite), `tools/` (`eval_dev.py`, `repro_check.py`, `audit_unlabeled.py`), `output/dev.jsonl`; `demo/viewer.html` `(cut / optional post-submission bonus)`. Customer domain owns `customer_notes.py`; Watchlist domain owns `profile_text.py`. | Clean separation between customer and watchlist text parsing, minimal package nesting, and a lean solo endgame surface. |
+| **7. UX & Creativity Deliverable** | **Cut for Solo Finish (`demo/viewer.html` Deferred):** Dropped from the required critical path because it carries `0%` weight in the automated 80/10/10 rubric; only revisit if spare time remains *after* the clean public submission repo is pushed and verified. | Protects deadline focus on mandatory deliverables (`system/`, `output/dev.jsonl`, `system/README.md`) and `-60` / reproducibility gates. |
 | **8. Git/PR & Repo Hygiene** | **AGY Convention:** `chore/*` and `feat/*` branches, human-only PR merges, `dev/` IDs permitted in local dev tests, final submission published in a **brand-new clean public repository** (`system/` + `output/dev.jsonl` only). | Protects participant data privacy and ensures clean public submission. |
 | **9. Language & Target Plan File** | **English -> `FINAL_PLAN.md`** | Single authoritative blueprint for the team and AI agents. |
-| **10. Parallelization Target** | **2-Person Team (Person 1 + AI and Person 2 + AI)** — detailed wave schedule, cross-review gates, and async worktree queues in Section 7. | Maximizes throughput for a 2-person team without stalling on dependencies or PR reviews. |
+| **10. Parallelization Target** | **Solo Execution Post-Wave-2 (1 Person + AI):** Assumes Waves 0–2 (Tracks A–H) are fully merged on `main`; remaining strictly necessary work collapses into one single sequential branch (`feat/final-delivery`) + clean repo release in Section 7. | Eliminates PR overhead, worktree juggling, and non-essential tracks for a fast 1-person finish. |
 
 ### Scoring Weights & Cost Matrix ([README.md](README.md), [validate.py](validate.py))
 
@@ -170,7 +170,7 @@ FinCrimeHackathon/
 │   ├── repro_check.py                # Runs system/run N=5 times with empty caches, checks 0 diffs
 │   └── audit_unlabeled.py            # Risk audit across the 769 unlabeled hits in dev/
 └── demo/
-    └── viewer.html                   # Static zero-dependency HTML/JS demo viewer (UX & Creativity)
+    └── viewer.html                   # (Cut for solo finish — optional post-submission bonus only)
 ```
 
 ### Frozen Shared Contracts (`system/contracts.py`)
@@ -271,115 +271,104 @@ Every OpenRouter response passes through a strict Python verification gate befor
 - **Determinism & Stability:** Send `temperature=0`, `top_p=1`, `seed=42`, request JSON format, set tight `max_tokens=256`, and suppress/cap extraneous reasoning output if supported by the endpoint so JSON extraction stays compact and fast; parse JSON defensively (strip markdown fences/extraneous text before `json.loads`). Log `model_id`, `prompt_version`, call count, token count, and wall-clock duration.
 - **Deduplication & Ordering:** Deduplicate identical `(task, text)` payloads and submit requests in deterministic sorted order. Cache results in a thread-safe **in-memory per-run dictionary** keyed by `SHA-256(model_id + prompt_version + task + text)` (never persisted across runs or committed to Git).
 - **Free-Tier Quota & Latency Resilience:** Respect `Retry-After` headers with bounded exponential backoff on HTTP `429` / `5xx`, enforce `15s` per-call timeout, and enforce hard per-run caps (`max_calls`, `max_tokens`, and total wall-clock budget `<= 20 min` leaving huge margin under the 30-minute limit).
-- **Offline AI Usage (Development Only, Outside `system/`):** Use OpenRouter offline to generate ~40–50 adversarial paraphrased notes/profiles/snippets (human-reviewed for semantic equivalence) and to cross-audit suspicious cases in the 769 unlabeled `dev/` hits.
+- **Offline AI Usage (Development Only, Outside `system/`):** No new offline generation is needed for the solo finish; if a pre-built paraphrase script/bank is already executable as-is, run it once as a live smoke check, otherwise verify OpenRouter live directly on `dev/`.
 
 ---
 
-## 6. Verification, Anti-Overfitting Suite & Delivery Checklist
+## 6. Verification & Delivery Checklist (Strictly Necessary Solo Scope)
 
 ### 6.1 Integration Milestones & Hard Release Gates
 
 | Gate Type | Requirement |
 |---|---|
-| **Non-Blocking Integration Milestone (before rule tuning)** | Measure `customer_record_id` accuracy across resolved alerts and assert **100% recall** of indexed linkless search vs exhaustive brute-force scan across linkless alerts before tuning decision thresholds. |
+| **Non-Blocking Integration Milestone (before rule tuning)** | Verify `customer_record_id` accuracy across all link types via `tools/eval_dev.py --run` (`record_by_link` breakdown); run an exhaustive brute-force linkless recall check only if `none`-link alerts show misses. |
 | **Hard Gate 1 — Schema & Validator** | `system/run dev output/dev.jsonl` and `python validate.py --data dev --output output/dev.jsonl --score dev/practice_labels.jsonl` pass with **`0 problems`** across all 819 hits. |
-| **Hard Gate 2 — Zero Unsafe Clearances** | **`0` observed unsafe clearances** across practice labels, synthetic edge cases, and manual unlabeled audit. |
-| **Hard Gate 3 — 5x Reproducibility** | `tools/repro_check.py` executes `system/run` **5 times in fresh empty-cache processes** (both deterministic-only and with live OpenRouter API) and observes **`0` diffs** on `(hit_id, decision, reason_code)` (and verifies full JSONL stability). |
-| **Hard Gate 4 — Runtime & POSIX Portability** | Executes from a separate working directory on POSIX (`LF` line endings, `+x` permissions on `system/run`) with **`practice_labels.jsonl` removed** from `<data folder>`, completing well under **30 minutes** (target `< 30 s` on `dev/`). |
+| **Hard Gate 2 — Zero Unsafe Clearances** | **`0` observed unsafe clearances** across `practice_labels.jsonl` and the high-risk unlabeled audit (Sections 1–6). |
+| **Hard Gate 3 — 5x Reproducibility** | `tools/repro_check.py --data dev --runs 5 --hide-labels` executes `system/run` **5 times in fresh empty-cache processes** (tested with `--no-llm` first, then with live OpenRouter API) and observes **`0` diffs** on `(hit_id, decision, reason_code)` (and verifies full JSONL stability). |
+| **Hard Gate 4 — Runtime & POSIX Portability** | Executes from a separate working directory on POSIX (`LF` line endings and git mode `100755` via `git update-index --chmod=+x system/run` on Windows-built repos) with **`practice_labels.jsonl` removed** from `<data folder>`, completing well under **30 minutes** (target `< 30 s` deterministic on `dev/`). |
 
-### 6.2 Comprehensive Test Matrix (`tests/` & `tools/`)
+### 6.2 Verification Scope (Strictly Necessary Solo Pass)
 
-1. **All 11 Reason Codes & Rare Policy Paths:**
-   - Explicit unit/integration tests for codes absent from `practice_labels.jsonl`: `DECEASED` (`H-BD709E` dated `2022-03` `< screened_at` vs `H-A0E7C9` and `H-DCDB32` with `deceased_date: null` which must NOT clear), `ENTITY_TYPE_MISMATCH` (`H-5EEC5A` in `A-41F2A9`), `AMBIGUOUS_CUSTOMER_RECORD` (2 compatible candidates yielding divergent decisions vs unanimous `AMBIGUOUS` in `#44`/`#50`), and synthetic company `dobs` + company `TEMPORAL_IMPOSSIBILITY` (`H-FA8509`).
-2. **Exact Forensic Edge Cases:**
-   - `H-622EDD` (DOB mismatch via `NOTE-CA9BBC` + `SR-A88751`), `H-D861DA` (joint-account disambiguation + `NOTE-8548C1`), `H-0181BD` (joint account + cluster union `CUS-775419`/`CUS-138588` + `NOTE-CB2CB8` + `SR-590704`), `H-6C7985` (two compatible candidates `CUS-618916`/`CUS-885413` both `REVIEW` -> `AMBIGUOUS`).
-   - `H-2C6B2E` (P1 `DOB: 6/20/1955` vs `SR-1054CF` `{1955, 1956}` -> `REVIEW / INSUFFICIENT_DATA`) vs `H-FE02A6` (both agree with `1955-06-20`).
-   - `H-FF3096` (`22.11.2011` is not a DOB), `NOTE-7F183D` (`"international transfer"` + residence in India), `1,684` cases where rejected/expired KYC checks follow `approved`, `116` `(phone, full_dob)` clusters + `7` shared approved docs vs `68` family phones, `702/702` `SR` query lookup preserving repeated tokens.
-3. **Boundary & Invariance Tests:**
-   - Ages `15` vs `16` on partial dates at `earliest_report_date`; birth year `±1` (`REVIEW`) vs `±2` (contradict); same year + differing month/day; `name_agrees and dob_agrees` + disjoint country -> immediate `REVIEW`; pure Levenshtein (`Mark != Markus`, `John != Jonathan`, length `>= 7` transpositions); non-transitive `name_variants.json` (`yusuf != giuseppe`); placeholders (`UNKNOWN NADEEM`, `BUSTAMANTE 0000`) vs `N26 Bank SE`; single-part aliases; territory independence (`Puerto Rico != US`); exclusion of `International`/`Europe`.
-   - Row-order shuffling, reassigned synthetic IDs, and global file-read failure returning a clear non-zero error while per-hit failures degrade to `REVIEW` + `stderr` (and raise under `--strict`).
-4. **Anti-Overfitting Generalization Suite & Unlabeled Audit:**
-   - **~40–50 human-verified synthetic paraphrases** (KYC notes, rejected onboarding notes, support residence notes, false-positive transfer notes like `"sent money to Peru"`, paraphrased P1 profiles, paraphrased `SR` snippets) verified end-to-end with live OpenRouter fallback.
-   - **769 unlabeled hits audit (`tools/audit_unlabeled.py`):** Inspect all `DECEASED`, `ENTITY_TYPE_MISMATCH`, `TEMPORAL_IMPOSSIBILITY`, `AMBIGUOUS`, `null`-customer hits, placeholder alerts, and a reproducible stratified sample of `DIFFERENT_ENTITY` clearances to confirm zero suspicious unsafe clearances. Do **not** treat the 50 inspected `practice_labels.jsonl` hits as an independent unseen holdout.
+1. **All 11 Reason Codes & Rare Policy Paths:** Already covered by the merged Waves 0–2 module unit tests in `tests/` (`DECEASED`, `ENTITY_TYPE_MISMATCH`, `AMBIGUOUS_CUSTOMER_RECORD`, company `TEMPORAL_IMPOSSIBILITY`).
+2. **Exact Forensic Edge Cases & Boundaries:** Already covered by the merged Waves 0–2 module unit tests in `tests/` (`H-622EDD`, `H-D861DA`, `H-0181BD`, `H-6C7985`, `H-2C6B2E`/`H-FE02A6`, `H-FF3096`, `NOTE-7F183D`, `1,684` KYC check orderings, `116` phone+DOB clusters, `702/702` `SR` lookup, pure Levenshtein, non-transitive `name_variants.json`, territory independence).
+3. **Minimal Solo End-to-End Verification (`tools/` Only — No New Test Suite Authoring):**
+   - Do **not** spend time authoring new standalone `tests/test_integration.py`, `tests/test_invariance.py`, or new `tests/test_generalization.py` harnesses; rely directly on the existing `tools/` suite:
+   - `tools/eval_dev.py --run` (`--no-llm` first, then live OpenRouter) to check `validate.py`, practice score, `0` unsafe clearances, `record_by_link`, and reason-text formatting.
+   - `tools/audit_unlabeled.py --data dev --output output/dev.jsonl --sample 0` inspecting **only Sections 1–6** (decision distribution, rare clearances `DECEASED`/`ENTITY_TYPE_MISMATCH`/`TEMPORAL_IMPOSSIBILITY`, `AMBIGUOUS`, `null`-customer clearances, placeholder alerts, and `match_score=100` clearances; Section 7 random sampling skipped).
+   - `tools/repro_check.py --data dev --runs 5 --hide-labels` (covers 5x determinism, `PYTHONHASHSEED`, empty `cwd`, `practice_labels.jsonl` removed, and `validate.py` = `0`).
+   - Optional 1-command run of pre-built paraphrase inputs **only** if already ready to execute as-is.
 
 ### 6.3 Required Pre-Submission Checks & Deliverables
 
-Run on the release candidate from a separate directory:
+Run checks in two explicit stages (deterministic-only first, then live OpenRouter from a separate working directory):
 
 ```sh
+# Stage 1: Deterministic integration, scoring, and high-risk unlabeled audit (OPENROUTER_API_KEY unset)
+python tools/eval_dev.py --data dev --output output/dev.jsonl --run --verbose --paths
+python tools/audit_unlabeled.py --data dev --output output/dev.jsonl --sample 0 --out audit.md
+
+# Stage 2: Live OpenRouter + release-candidate checks from a separate working directory
 /abs/path/to/system/run dev output/dev.jsonl
 python validate.py --data dev --output output/dev.jsonl --score dev/practice_labels.jsonl
-python tools/repro_check.py --data dev --runs 5
+python tools/repro_check.py --data dev --runs 5 --hide-labels --no-llm
+python tools/repro_check.py --data dev --runs 5 --hide-labels
 ```
 
-- **`system/README.md`:** Architecture diagram, customer resolution (Union-Find, joint accounts, KYC > CRM), watchlist resolution (cascade + `SR`), `Fact` provenance & minimal evidence, determinism controls (`temperature=0`, `seed=42`, SHA-256 cache, post-validation), OpenRouter model (`baidu/ernie-5.5-flash-preview:free`) & prompts, measured runtime/cost, and walkthroughs of 3 real cases (clear mismatch e.g. `H-D861DA` or `H-622EDD`, match `H-0181BD`, and review `H-6C7985`).
-- **Clean Public Submission Repo:** Create a brand-new public GitHub repository from scratch containing **only** `system/`, `output/dev.jsonl`, and a clean root README. Verify on Linux/WSL POSIX environment (`chmod +x system/run`, `LF` endings, `< 30 min`, `validate.py` = `0 problems`, zero `dev/` files, zero `.xlsx`, zero `.env` or API keys in working tree or Git history).
+- **`system/README.md` (Mandatory Deliverable):** Architecture diagram, customer resolution (Union-Find, joint accounts, KYC > CRM), watchlist resolution (cascade + `SR`), `Fact` provenance & minimal evidence, determinism controls (`temperature=0`, `seed=42`, SHA-256 cache, post-validation), OpenRouter model (`baidu/ernie-5.5-flash-preview:free`) & prompts, measured runtime/cost, and walkthroughs of 3 real cases (clear mismatch e.g. `H-D861DA` or `H-622EDD`, match `H-0181BD`, and review `H-6C7985`).
+- **Cut / Deferred (`demo/viewer.html`):** Dropped from required deliverables for the solo finish (optional post-submission bonus only after the clean public submission repo is shipped and verified).
+- **Clean Public Submission Repo:** Create a brand-new public GitHub repository from scratch containing **only** `system/`, `output/dev.jsonl`, and a clean root README (**zero** `dev/`, `.xlsx`, `.env`/API keys, `tests/`, `tools/`, or `demo/`). Address Windows-to-Linux hazards explicitly: enforce `LF` line endings and executable mode `100755` (`git update-index --chmod=+x system/run`), and verify on a Linux/WSL POSIX environment from an external working directory with `practice_labels.jsonl` removed (`< 30 min`, `validate.py` = `0 problems`, zero `dev/` files, zero `.xlsx`, zero `.env` or API keys in working tree or Git history).
 
 ---
 
-## 7. Parallel Execution Roadmap — 2-Person Team + AI
+## 7. Solo Finish Roadmap — 1 Person + AI (Assuming Waves 0–2 Merged)
 
-This roadmap is explicitly optimized for **Person 1 + AI** and **Person 2 + AI** working concurrently in separate `git worktree` checkouts with **zero file overlap** and **cross-reviewed human PR merges** (Person 1 merges Person 2's PRs; Person 2 merges Person 1's PRs).
+> **Baseline Assumption & Operating Mode:**
+> - **Waves 0, 1, and 2 (Tracks A, H, B, C, D, E, F, G) are assumed fully merged on `main`.**
+> - **1 Person + AI Solo Finish:** Work sequentially on a **single branch (`feat/final-delivery`)** from `main`, executing only the strictly necessary steps to reach `0` validator errors, `0` unsafe clearances, `5/5` reproducibility, `system/README.md`, `output/dev.jsonl`, and the clean public submission repo.
 
-### Dependency Graph
+### Sequential Flow
 
 ```mermaid
 flowchart LR
-    W0["Wave 0: chore/contracts-cli (Track A)"] --> B["Track B: feat/indices"]
-    W0 --> C["Track C: feat/normalization"]
-    W0 --> G["Track G: feat/llm-fallback"]
-    W0 --> H["Track H: feat/evaluation"]
-    B --> D["Track D: feat/customer"]
-    C --> D
-    B --> E["Track E: feat/profile"]
-    C --> E
-    C --> F["Track F: feat/decisions"]
-    G -. "Protocol + Mocks (merge before I)" .-> D
-    G -. "Protocol + Mocks (merge before I)" .-> E
-    D --> I["Track I: feat/integration-delivery"]
-    E --> I
-    F --> I
-    G --> I
-    H --> I
-    I --> GA["feat/generalization-audit (Phase 2B)"]
-    GA --> DR["Track I2: feat/docs-readme"]
-    GA --> J["Track J: feat/demo-viewer"]
+    M["Waves 0-2 Merged (Tracks A-H)"] --> S1["1. Wire main.py + Deterministic Gate"]
+    S1 --> S2["2. High-Risk Unlabeled Audit (Sec 1-6)"]
+    S2 --> S3["3. Live OpenRouter + 5x Repro + dev.jsonl"]
+    S3 --> S4["4. Write system/README.md + Merge PR"]
+    S4 --> S5["5. Clean Public Repo + POSIX Verify"]
 ```
 
-### Complete Track Catalog (Tracks A–J)
+### Track Status Summary (Tracks A–J)
 
-| Track & Branch | Owner | Exclusive Files | Standalone Acceptance Test | Integration Dependencies |
-|---|---|---|---|---|
-| **A · `chore/contracts-cli`** | Person 1 + AI | `.gitignore`, `.gitattributes`, `system/run`, `system/main.py`, `system/contracts.py` | Baseline CLI emits valid all-`REVIEW` 819-row `output/dev.jsonl`; `validate.py` = `0 problems` (score `0.0`). | None (Wave 0) |
-| **B · `feat/indices`** | Person 1 + AI | `system/data.py`, `tests/test_data.py` | Joint accounts return all holders; `SR` query index covers `702/702` individual hits; loads `< 2 s`; never reads `practice_labels.jsonl`. | Track A |
-| **C · `feat/normalization`** | Person 2 + AI | `system/names.py`, `system/dates.py`, `system/countries.py`, `tests/test_names.py`, `tests/test_dates_countries.py` | Initials, repeated tokens (`sorted(list)`), non-transitive variants, pure Levenshtein, `N26` protection, dual-mode slash dates, `{Y-a-1, Y-a}` ages, territories, `International`/`Europe` excluded. | Track A |
-| **H · `feat/evaluation`** | Person 2 + AI | `tools/eval_dev.py`, `tools/repro_check.py`, `tools/audit_unlabeled.py` | Runs against Wave 0 baseline (`output/dev.jsonl`), prints cost matrix, unsafe clearances, evidence F1, `reason_code` breakdown, and 5x diff check. | Starts in parallel with A (uses schema/labels), merges after A |
-| **G · `feat/llm-fallback`** | Person 1 + AI | `system/llm_fallback.py`, `tests/test_llm_fallback.py` | Mocked HTTP tests verify OpenRouter request (`baidu/ernie-5.5-flash-preview:free`, `temp=0`, `seed=42`), `SHA-256` cache, `429` backoff, call/token caps, quote/subject/negation validation, and clean fallback without key. | Track A |
-| **D · `feat/customer`** | Person 1 + AI | `system/customer.py`, `system/customer_notes.py`, `tests/test_customer.py`, `tests/test_customer_notes.py` | Union-Find (116 `(phone, full_dob)` + 7 shared docs vs 68 families), joint-account disambiguation, 100% linkless recall vs brute-force, `approved`-before-latest (`1,684` cases), `3,067` residence notes incl. `NOTE-7F183D`, mocked `LLMFallback` hooks. | Tracks A, B, C (develops against `LLMFallback` Protocol) |
-| **E · `feat/profile`** | Person 2 + AI | `system/watchlist.py`, `system/profile_text.py`, `tests/test_watchlist.py`, `tests/test_profile_text.py` | `hit.dobs` company-only rule, P1 narrative + paraphrased age, `H-2C6B2E` P1-KV vs `SR-1054CF` conflict flag, `H-FF3096` non-DOB guard, strict 640-line dated reports, `deceased_date != null`, `SR` category+country attribution, mocked `LLMFallback` hooks. | Tracks A, B, C (develops against `LLMFallback` Protocol) |
-| **F · `feat/decisions`** | Person 2 + AI | `system/decision.py`, `system/explain.py`, `tests/test_decision.py`, `tests/test_explain.py` | Unit tests hit all **11 `reason_codes`** (`DECEASED`, `ENTITY_TYPE_MISMATCH`, `AMBIGUOUS_CUSTOMER_RECORD`), `PENDING_CLUE` guards, immediate `REVIEW` on Name+DOB with disjoint countries, `null` customer, minimal `CUS/KYC/NOTE/SR` citations, 2–4 sentence `reason`. | Tracks A, C (can start immediately after C merges, in parallel with D & E) |
-| **I · `feat/integration-delivery`** | Person 1 + AI (paired review) | `system/main.py`, `output/dev.jsonl`, `tests/test_integration.py` | Connects B–G; passes non-blocking `customer_record_id` & linkless recall check first; then hits `0` validator errors, `0` unsafe clearances, atomic output write, `--strict` error mode. | Tracks B–H |
-| **GA · `feat/generalization-audit`** | Person 2 + AI | `tests/test_generalization.py`, `tests/test_invariance.py` (+ audit run outputs) | Runs ~40–50 human-verified synthetic paraphrases with live OpenRouter API, row-shuffle / ID-rename / no-labels invariance, `repro_check.py` 5/5 identical `(hit_id, decision, reason_code)`, and unlabeled 769-hit risk audit. | Track I |
-| **I2 · `feat/docs-readme`** | Person 1 + AI | `system/README.md` | Complete documentation matching [README.md](README.md) Section 5.3 with measured time/cost and 3 real case studies (`H-D861DA`/`H-622EDD`, `H-0181BD`, `H-6C7985`). | Track GA (or starts draft after I, finalizes numbers after GA) |
-| **J · `feat/demo-viewer`** | Person 2 + AI | `demo/viewer.html` | Zero-dependency static HTML/JS viewer loading `output/dev.jsonl` showing customer cluster, hit facts, rule checks, and citations. (Can be prototyped on synthetic JSONL during earlier idle windows, finalized in Wave 5.) | Track I / GA |
+| Track | Status | Scope / Notes |
+|---|---|---|
+| **A, B, C, H, D, E, F, G** | **Merged on `main` (Assumed Complete)** | Core CLI, contracts, indices, normalizers, customer graph/notes, watchlist/profile text, SOP decision/explainer, OpenRouter fallback, and evaluation tools are all on `main`. |
+| **`feat/final-delivery`** *(combines `I` + `I2` + audit fixes)* | **Active — Single Remaining Code/Doc Branch** | Wires `B–G` in `system/main.py`, incorporates any `-60` audit fixes, generates `output/dev.jsonl`, and writes `system/README.md`. |
+| **GA** *(new test harness authoring)* | **Cut for Solo Finish** | Replaced by existing `tools/eval_dev.py`, `tools/repro_check.py`, and `tools/audit_unlabeled.py` (optional 1-command run of pre-built paraphrase inputs only if already ready as-is). |
+| **J (`demo/viewer.html`)** | **Cut for Solo Finish** | `0%` automated score weight; deferred strictly to post-submission bonus if time remains after Step 5. |
 
-### Wave-by-Wave 2-Person Schedule (Zero Stalls, Zero Merge Conflicts)
+### Solo 5-Step Execution Plan
 
-| Wave | Person 1 + AI | Person 2 + AI | Human Cross-Review & Merge Gate | Async Worktree Lookahead Queue |
-|---|---|---|---|---|
-| **Wave 0** *(Foundation)* | **Track A** (`chore/contracts-cli`): CLI launcher, `contracts.py`, baseline `main.py` | **Track H** (`feat/evaluation`): `eval_dev.py`, `repro_check.py`, `audit_unlabeled.py` against [output.schema.json](output.schema.json) | Person 2 reviews & merges **A** into `main`; Person 1 reviews & merges **H** after A merges. | Person 2 pre-designs synthetic test vectors for **C** while A is in review. |
-| **Wave 1** *(Core Foundations)* | **Track B** (`feat/indices`): `system/data.py` + `tests/test_data.py` | **Track C** (`feat/normalization`): `names.py`, `dates.py`, `countries.py` + tests | Person 2 reviews & merges **B**; Person 1 reviews & merges **C**. | While waiting on C review, Person 1 starts **Track G** (`feat/llm-fallback`) in a separate worktree (depends only on A). |
-| **Wave 2** *(Domain Resolvers + LLM)* | **Track D** (`feat/customer`): `customer.py`, `customer_notes.py` + finish **Track G** (`feat/llm-fallback`) | **Track E** (`feat/profile`): `watchlist.py`, `profile_text.py` + **Track F** (`feat/decisions`: `decision.py`, `explain.py`) | Person 2 merges **G** and **D**; Person 1 merges **E** and **F**. | Zero cross-dependency between D and E/F—both pairs develop against frozen `contracts.py` and `LLMFallback` mocks. |
-| **Wave 3** *(Integration)* | **Track I** (`feat/integration-delivery`): wire B–G in `main.py`, verify `customer_record_id` & linkless recall, generate `output/dev.jsonl` | Reviews & cross-checks **I**; prepares the 40–50 human-verified synthetic paraphrase bank in a separate worktree for **GA** | Person 2 reviews & merges **I** into `main` once `validate.py` = `0` problems and `0` unsafe clearances. | Person 2 can prototype `demo/viewer.html` on synthetic JSONL while **I** runs end-to-end checks. |
-| **Wave 4** *(Hardening & Audit)* | Support fixes from audit findings; pre-draft `system/README.md` structure | **Track GA** (`feat/generalization-audit`): live OpenRouter paraphrases, 5x empty-cache repro, invariance tests, 769 unlabeled risk audit | Person 1 reviews & merges **GA** (plus any targeted bugfix PRs, each verified by 5x repro). | — |
-| **Wave 5** *(Final Polish & Ship)* | **Track I2** (`feat/docs-readme`): finalize `system/README.md` with measured metrics + 3 cases | **Track J** (`feat/demo-viewer`): finalize `demo/viewer.html` wired to final `output/dev.jsonl` | Cross-review & merge **I2** and **J**. Jointly build & verify the **brand-new clean public repository** (`system/` + `output/dev.jsonl` only) on Linux/WSL POSIX. | — |
+| Step | Action & Commands | Exit Criteria |
+|---|---|---|
+| **1. Wire `system/main.py` & Deterministic Gate** | Create `feat/final-delivery` from updated `main`. Wire `data` -> `customer`/`watchlist`/`llm_fallback` -> `decision`/`explain` in `system/main.py`. With `OPENROUTER_API_KEY` **unset**, run `python tools/eval_dev.py --data dev --output output/dev.jsonl --run --verbose --paths`. Fix wiring/contract mismatches until clean. | `validate.py` = `0 problems`; `0` unsafe clearances on `practice_labels.jsonl`; acceptable `record_by_link` resolution; existing `tests/` pass. |
+| **2. High-Risk Unlabeled Audit (`-60` Protection)** | Run `python tools/audit_unlabeled.py --data dev --output output/dev.jsonl --sample 0 --out audit.md`. Inspect **Sections 1–6 only** (distribution, rare clearances `DECEASED`/`ENTITY_TYPE_MISMATCH`/`TEMPORAL_IMPOSSIBILITY`, `AMBIGUOUS`, `null`-customer clearances, placeholder alerts, `match_score=100` clearances). Fix any systemic `-60` clearance bugs directly in `feat/final-delivery` and re-run `eval_dev.py --run`. | Zero suspicious unsafe clearances across Sections 1–6; `eval_dev.py --run` re-passes with `0` problems and `0` unsafe clearances. |
+| **3. Live OpenRouter + 5x Repro + Final `output/dev.jsonl`** | Set `OPENROUTER_API_KEY`; run `python tools/eval_dev.py --data dev --output output/dev.jsonl --run` (record API calls/tokens and runtime `< 30 min`; run pre-built paraphrase inputs only if already 1-command executable). Run `python tools/repro_check.py --data dev --runs 5 --hide-labels --no-llm` and `python tools/repro_check.py --data dev --runs 5 --hide-labels`. Tighten LLM triggers/post-validation if `:free` causes nondeterminism or throttling, then regenerate final `output/dev.jsonl` via `system/run dev output/dev.jsonl` and confirm `validate.py` = `0 problems`. | `5/5` identical `(hit_id, decision, reason_code)` both `--no-llm` and live OpenRouter; runtime well under `30 min`; final `output/dev.jsonl` passes `validate.py` with `0 problems`. |
+| **4. Write `system/README.md` & Merge Single PR** | Write `system/README.md` (architecture diagram, customer & watchlist resolution, provenance/minimal evidence, determinism controls, OpenRouter model & prompts, measured runtime/cost, and 3 real case walkthroughs: e.g. `H-D861DA`/`H-622EDD`, `H-0181BD`, `H-6C7985`). Push `feat/final-delivery`, open PR targeting `main`, and human owner reviews & merges into `main`. | `system/README.md` complete with measured metrics and 3 real cases; `feat/final-delivery` merged into `main`. |
+| **5. Clean Public Submission Repo + POSIX Verification** | Initialize a brand-new public GitHub repo from scratch containing **only** `system/`, `output/dev.jsonl`, and a clean root README (**zero** `dev/`, `.xlsx`, `.env`/API keys, `tests/`, `tools/`, or `demo/`). Enforce `LF` line endings and executable mode `100755` (`git update-index --chmod=+x system/run`). On Linux/WSL from a separate working directory against data with `practice_labels.jsonl` removed, run `/abs/path/to/system/run <no-labels-data> /tmp/out.jsonl` and `validate.py`. | `system/run` executes `< 30 min` on POSIX; `validate.py` = `0 problems`; zero `dev/` files, `.xlsx`, or secrets in working tree or Git history. |
 
-### Time-Crunch Priority Order (If Deadline Compresses)
+### Explicitly Cut for Solo Finish
 
-If time runs short, protect score in strict descending order of cost-matrix impact:
-1. **Wave 0 (`chore/contracts-cli`):** Runnable `system/run` + frozen `contracts.py` + `0 problems` in `validate.py`.
-2. **Safe Contradictions on Linked Alerts:** `data.py` link resolution + `dates.py`/`countries.py` + `Type`, `Deceased`, `Temporal`, `DOB`, and `Location` clearances (`DIFFERENT_ENTITY` removes the bulk of false positives safely).
-3. **Principle 8 Names + Verified Name + `SAME_ENTITY` + Minimal Evidence (`explain.py`).**
-4. **Full Customer Graph & Watchlist Cascade:** Union-Find + 146 linkless alerts + `P1`/`SR` cascade (with `H-2C6B2E` conflict guard) + multi-person `AMBIGUOUS`.
-5. **OpenRouter Fallback (`llm_fallback.py`) + Adversarial Paraphrase & 5x Reproducibility Checks.**
-6. **769 Unlabeled Audit + `system/README.md` + `demo/viewer.html` + Clean Public Repo Release.**
+- **`demo/viewer.html` (Track J):** `0%` weight in the automated 80/10/10 rubric; post-submission bonus only after Step 5 is pushed and verified.
+- **Authoring new standalone test suites (`tests/test_integration.py`, `tests/test_invariance.py`, new `tests/test_generalization.py` framework):** Replaced by existing `tools/eval_dev.py`, `tools/repro_check.py`, and `tools/audit_unlabeled.py`.
+- **`audit_unlabeled.py` Section 7 stratified random sample:** Use `--sample 0` (Sections 1–6 high-risk clearances only).
+- **Exhaustive brute-force linkless recall harness:** Skip unless `eval_dev.py`'s `record_by_link` output shows misses on `none`-link alerts.
+- **Multi-branch / multi-worktree PR splitting after Wave 2:** All remaining work lands on one single branch (`feat/final-delivery`).
+
+### Emergency Cutoff Priority Order (Strict Descending Impact)
+
+If time gets even tighter, follow Steps 1–5 in strict order without skipping safety gates:
+1. **Step 1 — Wire `system/main.py` + Deterministic Gate:** `validate.py` = `0 problems` and `0` unsafe clearances on `practice_labels.jsonl`.
+2. **Step 2 — High-Risk Unlabeled Audit (`--sample 0`, Sections 1–6):** Eliminate `-60` unsafe-clearance bugs on rare codes, `null`-customer hits, placeholders, and `match_score=100`.
+3. **Step 3 — Live OpenRouter + 5x `repro_check.py --hide-labels` + Final `output/dev.jsonl`:** Lock in 10% Reproducibility and 80% Unseen-Set stability.
+4. **Step 4 — `system/README.md` + Single PR Merge:** Complete mandatory architecture & 3-case documentation.
+5. **Step 5 — Clean Public Submission Repo + Linux/WSL POSIX Check:** Ship compliant repo (`system/`, `output/dev.jsonl`, root README; `LF` + `100755`, zero `dev/` files or secrets).
