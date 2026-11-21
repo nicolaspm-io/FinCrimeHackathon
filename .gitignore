@@ -1,1 +1,8 @@
 .review/
+.env
+.env.*
+__pycache__/
+*.py[cod]
+*$py.class
+.cache/
+.pytest_cache/

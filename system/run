@@ -1,0 +1,15 @@
+#!/usr/bin/env python3
+"""POSIX CLI entrypoint: system/run <data folder> <output file>"""
+from __future__ import annotations
+
+import os
+import sys
+
+_SYSTEM_DIR = os.path.dirname(os.path.realpath(__file__))
+if _SYSTEM_DIR not in sys.path:
+    sys.path.insert(0, _SYSTEM_DIR)
+
+from main import main
+
+if __name__ == "__main__":
+    raise SystemExit(main())
