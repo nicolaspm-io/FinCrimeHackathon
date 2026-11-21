@@ -29,6 +29,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="Re-raise malformed input or per-hit errors instead of isolating them.",
     )
+    parser.add_argument(
+        "--no-llm",
+        action="store_true",
+        help="Disable the OpenRouter fallback even when OPENROUTER_API_KEY is set.",
+    )
     return parser.parse_args(argv)
 
 
@@ -198,11 +203,71 @@ def write_jsonl_atomic(decisions: list[HitDecision], output_file: str) -> None:
                 pass
 
 
-def run_pipeline(data_dir: str, output_file: str, *, strict: bool = False) -> int:
+def _import_pipeline():
+    """Import the pipeline modules lazily so the baseline helpers stay importable alone."""
+    try:
+        from . import customer, decision, explain, llm_fallback, watchlist
+        from .data import load_dataset
+    except ImportError:
+        import customer, decision, explain, llm_fallback, watchlist  # type: ignore
+        from data import load_dataset  # type: ignore
+    return customer, decision, explain, llm_fallback, watchlist, load_dataset
+
+
+def build_evaluator(data_dir: str, *, strict: bool = False, use_llm: bool = True):
+    """Load the data folder once and return (evaluator, hits, llm) for the full pipeline.
+
+    The evaluator resolves each alert's candidate customers once (cached per alert),
+    resolves the watchlist hit, applies the SOP decision engine and formats the
+    output record.
+    """
+    customer, decision, explain, llm_fallback, watchlist, load_dataset = _import_pipeline()
+    dataset = load_dataset(data_dir, strict=strict)
+    llm = llm_fallback.create_llm_fallback() if use_llm else llm_fallback.NullLLMFallback()
+    resolver = customer.CustomerResolver(dataset, llm_fallback=llm)
+    variants = resolver.variants
+    alert_cache: dict[str, tuple[Any, ...]] = {}
+
+    def candidates_for(alert_id: str) -> tuple[Any, ...]:
+        cached = alert_cache.get(alert_id)
+        if cached is None:
+            alert = dataset.alerts_by_id.get(alert_id)
+            cached = resolver.resolve_alert(alert) if alert is not None else ()
+            alert_cache[alert_id] = cached
+        return cached
+
+    def evaluate(hit: dict[str, Any]) -> HitDecision:
+        hit_id = _require_non_empty_id(hit, "hit_id")
+        alert_id = _require_non_empty_id(hit, "alert_id")
+        alert = dataset.alerts_by_id.get(alert_id) or {}
+        screened = alert.get("customer") or {}
+        resolved, _detail = watchlist.resolve_hit(hit, dataset, llm)
+        outcome = decision.decide(
+            resolved,
+            candidates_for(alert_id),
+            alert.get("screened_at"),
+            variants,
+            screened.get("entity_type"),
+        )
+        result = explain.to_hit_decision(outcome, resolved)
+        if result.hit_id != hit_id or result.alert_id != alert_id:
+            raise ValueError(f"pipeline returned mismatched ids for hit {hit_id!r}")
+        return result
+
+    return evaluate, list(dataset.hits), llm
+
+
+def run_pipeline(data_dir: str, output_file: str, *, strict: bool = False, use_llm: bool = True) -> int:
     """Load data, run screening evaluation, and write output atomically."""
-    hits = load_hits(data_dir, strict=strict)
-    decisions = process_hits(hits, strict=strict)
+    evaluator, hits, llm = build_evaluator(data_dir, strict=strict, use_llm=use_llm)
+    decisions = process_hits(hits, strict=strict, evaluator=evaluator)
     write_jsonl_atomic(decisions, output_file)
+    stats = getattr(llm, "stats", None)
+    if callable(stats):
+        try:
+            sys.stderr.write(f"LLM stats: {json.dumps(stats(), sort_keys=True, default=str)}\n")
+        except Exception:  # stats are diagnostic only
+            pass
     return 0
 
 
@@ -210,7 +275,9 @@ def main(argv: list[str] | None = None) -> int:
     """CLI entry point returning POSIX process exit status."""
     args = parse_args(argv)
     try:
-        return run_pipeline(args.data_dir, args.output_file, strict=args.strict)
+        return run_pipeline(
+            args.data_dir, args.output_file, strict=args.strict, use_llm=not args.no_llm
+        )
     except OSError as exc:
         sys.stderr.write(f"ERROR: {exc}\n")
         return 1

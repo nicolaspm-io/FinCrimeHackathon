@@ -206,6 +206,13 @@ class Guards(unittest.TestCase):
         out = decide(hit(names=("Ridwan, Azeez",), specs=[years(1960, 1961)], countries=("Nigeria",)), p)
         self.assertEqual(out.decision, "REVIEW")
 
+    def test_pending_kyc_note_clue_from_customer_notes_blocks_clearance(self):
+        # customer_notes.py emits field="kyc_note" for unparsed KYC notes; it must guard like "kyc".
+        p = person(vname="CHINEDU AZEEZ", vdob=ParsedDate(1990, 1, 1), countries=(("Kenya", "CUS-000001"),),
+                   clues=[pending("kyc_note")])
+        out = decide(hit(names=("Ridwan, Azeez",), specs=[years(1960, 1961)], countries=("Nigeria",)), p)
+        self.assertEqual(out.decision, "REVIEW")
+
     def test_decision_4_p1_key_value_vs_search_result(self):
         specs = [listed("6/20/1955", "p1_kv"), years(1955, 1956, "SR-1054CF", "sr")]
         h = hit(specs=specs, sr=["SR-1054CF"], conflict=True)

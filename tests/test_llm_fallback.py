@@ -109,14 +109,14 @@ class OpenRouterClientTest(unittest.TestCase):
 
         url, headers, body, timeout = captured[0]
         self.assertEqual(url, OPENROUTER_URL)
-        self.assertEqual(timeout, 15.0)
+        self.assertEqual(timeout, 30.0)
         self.assertEqual(headers["Authorization"], "Bearer test-key")
         self.assertEqual(headers["Content-type"], "application/json")
         self.assertEqual(body["model"], "baidu/ernie-5.5-flash-preview:free")
         self.assertEqual(body["temperature"], 0.0)
         self.assertEqual(body["top_p"], 1.0)
         self.assertEqual(body["seed"], 42)
-        self.assertEqual(body["max_tokens"], 256)
+        self.assertEqual(body["max_tokens"], 2048)
 
         with mock.patch.dict(
             os.environ,
