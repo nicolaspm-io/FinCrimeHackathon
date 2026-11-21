@@ -9,12 +9,17 @@ reason code:
   LOCATION_MISMATCH > NAME_MISMATCH_VERIFIED
 
 Guards that keep a clearance from costing 60:
-  - a pending clue on either side blocks only the rules it could overturn;
+  - a pending clue on either side blocks only the rules it could overturn, including a
+    location clearance when the missing name or birth fact could make name and date of
+    birth agree, and any unread country fact;
   - the P1 key-value vs search-result case (decision #4) clears only if BOTH sources
     contradict the customer, and is REVIEW if they disagree about the customer;
   - a country difference never clears a hit whose name and date of birth agree (REVIEW);
+  - declared birth dates that agree at different precision stay one date;
+  - hit countries are canonicalised, and "International" / "Europe" are not countries;
   - an individual whose names have fewer than two real parts is neither confirmed nor
-    cleared on name.
+    cleared on name;
+  - a customer with no entity type is not confirmed as the hit's company.
 Without a contradiction: confirm a person on name + date of birth (+ country for the
 _LOCATION_ variant), a company on name + country; otherwise REVIEW / INSUFFICIENT_DATA.
 
@@ -66,7 +71,8 @@ CODE_PRIORITY = CLEARANCE_ORDER + (NAME_DOB_LOCATION_MATCH, NAME_DOB_MATCH, NAME
 # Which pending-clue fields can overturn which comparison.
 _DOB_CLUES = {"dob", "age", "birth", "kyc", "incorporation"}
 _NAME_CLUES = {"name", "kyc"}
-_COUNTRY_CLUES = {"country", "countries", "residence", "doc_country", "kyc"}
+_COUNTRY_CLUES = {"country", "countries", "residence", "doc_country", "kyc",
+                  "nationality", "citizenship", "address", "place_of_birth", "location"}
 
 # Why a hit is left for review (explain.py turns these into sentences).
 WHY_NO_CUSTOMER = "no_customer"
@@ -116,6 +122,7 @@ class Comparison:
     p1_sr_split: bool  # decision #4: the two sources disagree about the customer
     country_overlap: tuple[str, ...]
     countries_comparable: bool
+    hit_countries: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -199,7 +206,7 @@ def person_view(person: CandidatePerson) -> PersonView:
         if len(declared) == 1:
             dob, dob_source = next(iter(declared.values()))
         elif len(declared) > 1:
-            unknown_reason = "the customer's records disagree on the date of birth"
+            dob, dob_source, unknown_reason = _merge_declared_dobs(tuple(declared.values()))
 
     verified_name, verified_name_source = None, ""
     if verified and _usable(verified.name) and "name" not in conflict_fields:
@@ -221,7 +228,8 @@ def person_view(person: CandidatePerson) -> PersonView:
         if country:
             countries.setdefault(country, set()).add(fact.source_id)
 
-    pending = _pending_fields(person.pending_clues) | frozenset(conflict_fields & (_COUNTRY_CLUES | {"name"}))
+    pending = _pending_fields(person.pending_clues) | frozenset(
+        conflict_fields & (_COUNTRY_CLUES | _NAME_CLUES | _DOB_CLUES))
     return PersonView(
         record_ids=tuple(person.record_ids),
         entity_type=person.entity_type or "",
@@ -235,6 +243,35 @@ def person_view(person: CandidatePerson) -> PersonView:
         countries={k: tuple(sorted(v)) for k, v in sorted(countries.items())},
         pending_fields=pending,
     )
+
+
+def _merge_declared_dobs(dates: tuple[tuple[ParsedDate, str], ...]) -> tuple[ParsedDate | None, str, str]:
+    """One declared birth date, or unknown when the records really disagree.
+
+    A year (or year-month) that agrees with a fuller date of the same calendar value is
+    one date: keep the most specific. Adjacent years and real contradictions stay unknown.
+    """
+    values = [item[0] for item in dates]
+    if any(_dates.compare_dates(left, right) != _dates.AGREE
+           for index, left in enumerate(values) for right in values[index + 1:]):
+        return None, "", "the customer's records disagree on the date of birth"
+
+    def rank(item: tuple[ParsedDate, str]) -> tuple[bool, bool]:
+        parsed, _source = item
+        return (parsed.day is not None, parsed.month is not None)
+
+    parsed, source = max(dates, key=rank)
+    return parsed, source, ""
+
+
+def canonical_hit_countries(values: Iterable[Any]) -> tuple[str, ...]:
+    """Canonical countries tied to a hit. Regions and unreadable tokens are dropped."""
+    found = set()
+    for raw in values:
+        country = _countries.country_from_location(raw)
+        if country:
+            found.add(country)
+    return tuple(sorted(found))
 
 
 def _decidable_name(name: str, entity_type: str, variants: _names.NameVariants) -> bool:
@@ -266,15 +303,24 @@ def compare(person: PersonView, hit: ResolvedHit, variants: _names.NameVariants)
     else:
         status = _dates.compare_dob(person.dob, specs)
 
-    overlap = tuple(sorted(set(person.countries) & set(hit.countries)))
-    comparable = bool(person.countries) and bool(hit.countries)
-    return Comparison(bool(found), name_pair, bool(decidable_names), status, specs, p1_sr_split, overlap, comparable)
+    hit_countries = canonical_hit_countries(hit.countries)
+    overlap = tuple(sorted(set(person.countries) & set(hit_countries)))
+    comparable = bool(person.countries) and bool(hit_countries)
+    return Comparison(bool(found), name_pair, bool(decidable_names), status, specs, p1_sr_split,
+                      overlap, comparable, hit_countries)
 
 
 def _dob_evidence(person: PersonView, specs: Iterable[DateSpec], hit: ResolvedHit) -> tuple[str, ...]:
-    # A birth year read from search results is cited by the result's ID (labels: SR-A88751).
-    sr_ids = [s.source_id for s in specs if s.origin == "sr"]
-    return _sorted_ids([person.dob_source, *sr_ids])
+    # Search results are cited by their own id. A date read from the hit profile is the hit
+    # itself, which the output already names via hit_id, so that id is not repeated.
+    extra = [s.source_id for s in specs if s.origin == "sr" or (s.source_id and s.source_id != hit.hit_id)]
+    return _sorted_ids([person.dob_source, *extra])
+
+
+def _agreement_evidence(person: PersonView, cmp: Comparison, hit: ResolvedHit, *, countries: Iterable[str] | None) -> tuple[str, ...]:
+    """Records that decided a match or a name-and-date review: identity, birth, and countries."""
+    return _sorted_ids([*person.record_ids, *_dob_evidence(person, cmp.dob_specs_used, hit),
+                        person.verified_name_source, *_country_evidence(person, countries)])
 
 
 def _country_evidence(person: PersonView, countries: Iterable[str] | None = None) -> tuple[str, ...]:
@@ -300,8 +346,10 @@ def decide_person(person: CandidatePerson | PersonView, hit: ResolvedHit, screen
     if hit.deceased_date is not None and _dates.certainly_before(hit.deceased_date, screened):
         findings.append(Finding(DECEASED, (), {"deceased": hit.deceased_date, "screened_at": screened}))
     # 3. time
-    dob_clue = bool(view.pending_fields & _DOB_CLUES)
-    if view.dob is not None and hit.earliest_report_date is not None and not dob_clue:
+    hit_pending = _pending_fields(hit.pending_clues)
+    name_clue = bool(view.pending_fields & _NAME_CLUES) or bool(hit_pending & _NAME_CLUES)
+    country_clue = bool(view.pending_fields & _COUNTRY_CLUES) or bool(hit_pending & _COUNTRY_CLUES)
+    if view.dob is not None and hit.earliest_report_date is not None and not (view.pending_fields & _DOB_CLUES):
         report = hit.earliest_report_date
         if view.entity_type == ENTITY_COMPANY:
             if _dates.certainly_after(view.dob, report):
@@ -315,14 +363,16 @@ def decide_person(person: CandidatePerson | PersonView, hit: ResolvedHit, screen
     if cmp.dob_status == _dates.CONTRADICT:
         findings.append(Finding(DOB_MISMATCH, _dob_evidence(view, cmp.dob_specs_used, hit),
                                 {"customer_dob": view.dob, "source": view.dob_source, "specs": cmp.dob_specs_used}))
-    # 6. location (never against a name + date-of-birth agreement)
+    # 6. location (never against a name + date-of-birth agreement, nor when a pending
+    # name or birth clue could still produce that agreement)
     name_dob_agree = cmp.name_agrees and cmp.dob_status == _dates.AGREE
-    country_clue = bool(view.pending_fields & _COUNTRY_CLUES)
-    if cmp.countries_comparable and not cmp.country_overlap and not name_dob_agree and not country_clue:
+    identity_unresolved = ((cmp.name_agrees and bool(view.pending_fields & _DOB_CLUES or hit_pending & _DOB_CLUES))
+                           or (cmp.dob_status == _dates.AGREE and name_clue))
+    if (cmp.countries_comparable and not cmp.country_overlap and not name_dob_agree
+            and not country_clue and not identity_unresolved):
         findings.append(Finding(LOCATION_MISMATCH, _sorted_ids(list(view.record_ids) + list(_country_evidence(view))),
-                                {"customer_countries": tuple(view.countries), "hit_countries": tuple(hit.countries)}))
+                                {"customer_countries": tuple(view.countries), "hit_countries": cmp.hit_countries}))
     # 7. verified name
-    name_clue = bool(view.pending_fields & _NAME_CLUES)
     entity = view.entity_type or hit.entity_type
     if (view.verified_name and not name_clue and _decidable_name(view.verified_name, entity, variants)
             and _names.best_agreement([view.verified_name], tuple(hit.names) + tuple(hit.aliases), entity, variants) is None):
@@ -341,18 +391,22 @@ def decide_person(person: CandidatePerson | PersonView, hit: ResolvedHit, screen
                              view, cmp, WHY_P1_SR_CONFLICT)
     if name_dob_agree and cmp.countries_comparable and not cmp.country_overlap:
         return PersonOutcome(DECISION_REVIEW, INSUFFICIENT_DATA, record_id,
-                             (Finding(INSUFFICIENT_DATA, _sorted_ids(list(view.record_ids) + list(_dob_evidence(view, cmp.dob_specs_used, hit))),
-                                      {"customer_countries": tuple(view.countries), "hit_countries": tuple(hit.countries)}),),
+                             (Finding(INSUFFICIENT_DATA, _agreement_evidence(view, cmp, hit, countries=None),
+                                      {"customer_countries": tuple(view.countries), "hit_countries": cmp.hit_countries}),),
                              view, cmp, WHY_NAME_DOB_AGREE_COUNTRY_DIFFERS)
 
-    # 8. confirmation
-    if entity == ENTITY_COMPANY:
-        if cmp.name_agrees and cmp.country_overlap and not country_clue:
-            evidence = _sorted_ids(list(view.record_ids) + [view.verified_name_source])
+    # 8. confirmation. A pending legal name can still overturn it. An unknown customer
+    # type is not confirmed as the hit's company. A pending incorporation date can still
+    # make a company too young for the earliest dated report.
+    name_ready = not name_clue
+    if view.entity_type == ENTITY_COMPANY:
+        incorporation_open = bool(view.pending_fields & _DOB_CLUES) and hit.earliest_report_date is not None
+        if cmp.name_agrees and cmp.country_overlap and not country_clue and name_ready and not incorporation_open:
+            evidence = _agreement_evidence(view, cmp, hit, countries=cmp.country_overlap)
             return PersonOutcome(DECISION_SAME, NAME_LOCATION_MATCH, record_id,
                                  (Finding(NAME_LOCATION_MATCH, evidence, {"overlap": cmp.country_overlap}),), view, cmp)
-    elif name_dob_agree:
-        evidence = _sorted_ids(list(view.record_ids) + list(_dob_evidence(view, cmp.dob_specs_used, hit)))
+    elif name_dob_agree and name_ready and not (not view.entity_type and hit.entity_type == ENTITY_COMPANY):
+        evidence = _agreement_evidence(view, cmp, hit, countries=cmp.country_overlap)
         code = NAME_DOB_LOCATION_MATCH if cmp.country_overlap else NAME_DOB_MATCH
         return PersonOutcome(DECISION_SAME, code, record_id,
                              (Finding(code, evidence, {"overlap": cmp.country_overlap}),), view, cmp)

@@ -158,8 +158,22 @@ def _missing_clause(person: D.PersonOutcome, hit: ResolvedHit) -> str:
     return ", ".join(missing[:-1]) + " and " + missing[-1]
 
 
+def _explained_person(outcome: D.Outcome) -> D.PersonOutcome | None:
+    """The candidate whose reason code is the one being reported.
+
+    Several candidates can share a decision and differ on the code. The text has to
+    describe the code that was chosen, which is not always the first candidate.
+    """
+    if not outcome.persons:
+        return None
+    for person in outcome.persons:
+        if person.reason_code == outcome.reason_code:
+            return person
+    return outcome.persons[0]
+
+
 def review_sentences(outcome: D.Outcome, hit: ResolvedHit) -> list[str]:
-    person = outcome.persons[0] if outcome.persons else None
+    person = _explained_person(outcome)
     why = outcome.why or (person.why if person else "")
     if why == D.WHY_NO_CUSTOMER or person is None or person.person is None:
         return ["No customer record could be found for this alert.",
@@ -181,9 +195,10 @@ def review_sentences(outcome: D.Outcome, hit: ResolvedHit) -> list[str]:
                 "and the other does not, so the hit can be neither cleared nor confirmed."]
     if why == D.WHY_NAME_DOB_AGREE_COUNTRY_DIFFERS:
         view, cmp = person.person, person.comparison
+        hit_countries = cmp.hit_countries if cmp is not None else ()
         return [f"The customer's name and date of birth {_with_source(_iso(view.dob), view.dob_source)} agree with the hit.",
                 f"The customer is linked only to {join_list(view.countries)} but the hit is linked only to "
-                f"{join_list(hit.countries)}.",
+                f"{join_list(hit_countries)}.",
                 "A country difference does not clear a hit whose name and date of birth agree, so it is left for review."]
     sentences = _agreement_sentences(person, hit)
     sentences.append(f"Nothing in the customer's records contradicts the hit, and {_missing_clause(person, hit)}, "
@@ -194,13 +209,13 @@ def review_sentences(outcome: D.Outcome, hit: ResolvedHit) -> list[str]:
 def reason_text(outcome: D.Outcome, hit: ResolvedHit) -> str:
     """2-4 factual sentences (a single sentence for a single clear contradiction)."""
     if outcome.decision == DECISION_DIFFERENT:
-        person = outcome.persons[0]
-        sentences = [finding_sentence(f, hit) for f in person.findings]
+        person = _explained_person(outcome)
+        sentences = [finding_sentence(f, hit) for f in (person.findings if person else ())]
         sentences = [s for s in dict.fromkeys(sentences) if s]
         return " ".join(sentences[:MAX_SENTENCES])
     if outcome.decision == DECISION_SAME:
-        person = outcome.persons[0]
-        sentences = _agreement_sentences(person, hit)
+        person = _explained_person(outcome)
+        sentences = _agreement_sentences(person, hit) if person else []
         if outcome.reason_code == D.NAME_DOB_MATCH:
             sentences.append("The customer's countries cannot be matched with the hit's, but nothing contradicts the match.")
         return " ".join(sentences[:MAX_SENTENCES])

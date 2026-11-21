@@ -248,6 +248,71 @@ class NoCustomer(unittest.TestCase):
         self.assertEqual(decide(hit(entity=IND), screened_type=COMP).reason_code, "ENTITY_TYPE_MISMATCH")
 
 
+class UnsafeClearanceGuards(unittest.TestCase):
+    def test_year_and_full_date_that_agree_are_one_date(self):
+        agreed = person(names=("Maria Garcia",), dobs=("2004", "19/05/2004"),
+                        countries=(("Spain", "CUS-000001"),))
+        same = decide(hit(names=("Maria Garcia",), specs=[listed("2004-05-19")], countries=("Spain",)), agreed)
+        self.assertEqual(same.decision, "SAME_ENTITY")
+        blocked = decide(hit(names=("Maria Garcia",), specs=[listed("2004-05-19")], countries=("France",)), agreed)
+        self.assertEqual((blocked.decision, blocked.why), ("REVIEW", D.WHY_NAME_DOB_AGREE_COUNTRY_DIFFERS))
+
+    def test_non_countries_and_raw_country_forms_do_not_clear(self):
+        other = person(names=("Other Person",), countries=(("Spain", "CUS-000001"),))
+        for raw in ("International", "Europe"):
+            out = decide(hit(names=("Someone Else",), countries=(raw,)), other)
+            self.assertNotEqual(out.reason_code, "LOCATION_MISMATCH", raw)
+        united = person(names=("Other Person",), countries=(("United Kingdom", "CUS-000001"),))
+        for raw in ("British", "GB"):
+            out = decide(hit(names=("Someone Else",), countries=(raw,)), united)
+            self.assertNotEqual(out.reason_code, "LOCATION_MISMATCH", raw)
+        spain = decide(hit(names=("Someone Else",), countries=("Spain [Business]",)), other)
+        self.assertNotEqual(spain.reason_code, "LOCATION_MISMATCH")
+        macao = person(names=("Other Person",), countries=(("Macao", "CUS-000001"),))
+        out = decide(hit(names=("Someone Else",), countries=("Macao Special Administrative Region of China",)), macao)
+        self.assertNotEqual(out.reason_code, "LOCATION_MISMATCH")
+
+    def test_pending_birth_or_name_blocks_the_location_clearance_it_could_overturn(self):
+        named = person(vname="Maria Garcia", countries=(("Spain", "CUS-000001"),), clues=[pending("dob")])
+        self.assertEqual(decide(hit(names=("Maria Garcia",), countries=("France",)), named).decision, "REVIEW")
+        born = person(names=("Other Person",), vdob=ParsedDate(1980, 5, 1), countries=(("Spain", "CUS-000001"),),
+                      clues=[pending("name")])
+        self.assertEqual(decide(hit(names=("Maria Garcia",), specs=[listed("1980-05-01")], countries=("France",)), born).decision,
+                         "REVIEW")
+        clue = Fact("dob", None, "aged 30", FactStatus.PENDING_CLUE, "hit", "HIT", "H-HIT001", "profile_notes#p1")
+        self.assertEqual(decide(hit(names=("Maria Garcia",), countries=("France",), clues=[clue]),
+                                person(vname="Maria Garcia", countries=(("Spain", "CUS-000001"),))).decision, "REVIEW")
+
+    def test_pending_nationality_and_hit_country_block_location(self):
+        customer = person(names=("Other Person",), countries=(("Spain", "CUS-000001"),), clues=[pending("nationality")])
+        self.assertEqual(decide(hit(names=("Someone Else",), countries=("France",)), customer).decision, "REVIEW")
+        clue = Fact("country", None, "born in ...", FactStatus.PENDING_CLUE, "hit", "HIT", "H-HIT001", "profile_notes#p1")
+        out = decide(hit(names=("Someone Else",), countries=("France",), clues=[clue]),
+                     person(names=("Other Person",), countries=(("Spain", "CUS-000001"),)))
+        self.assertEqual(out.decision, "REVIEW")
+
+    def test_pending_name_does_not_confirm_the_declared_name(self):
+        p = person(names=("Maria Garcia",), vdob=ParsedDate(1980, 5, 1), countries=(("Spain", "CUS-000001"),),
+                   clues=[pending("name")])
+        out = decide(hit(names=("Maria Garcia",), specs=[listed("1980-05-01")], countries=("Spain",)), p)
+        self.assertNotEqual(out.decision, "SAME_ENTITY")
+
+    def test_unknown_customer_type_is_not_confirmed_as_a_company(self):
+        out = decide(hit(entity=COMP, names=("Acme Holdings",), countries=("Germany",)),
+                     person(entity="", vname="Acme Holdings", countries=(("Germany", "CUS-000001"),)))
+        self.assertNotEqual(out.decision, "SAME_ENTITY")
+
+    def test_match_evidence_cites_the_name_and_country_sources(self):
+        from contracts import CandidatePerson, VerifiedIdentity
+        verified = VerifiedIdentity(fact("name", "Maria Garcia", "KYC-NAME"),
+                                    fact("dob", ParsedDate(1980, 5, 1), "NOTE-DOB"),
+                                    None, None, "2024-01-01", "KYC-NAME")
+        p = CandidatePerson(("CUS-000001",), IND, verified, (), (), (fact("country", "Spain", "NOTE-CTY"),), ())
+        out = decide(hit(names=("Maria Garcia",), specs=[years(1980, 1981)], countries=("Spain",)), p)
+        self.assertEqual(out.decision, "SAME_ENTITY")
+        self.assertEqual(out.evidence, ("CUS-000001", "KYC-NAME", "NOTE-CTY", "NOTE-DOB"))
+
+
 class Determinism(unittest.TestCase):
     def test_same_input_same_outcome(self):
         args = (hit(specs=[years(1976, 1977)], countries=("United Kingdom",)), person(vdob=ParsedDate(1977, 1, 11), **TILLEY))

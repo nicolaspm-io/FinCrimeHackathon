@@ -73,6 +73,19 @@ class ReferenceWording(unittest.TestCase):
                                    "hit can be neither cleared nor confirmed.")
 
 
+class ReasonFollowsTheCode(unittest.TestCase):
+    def test_multi_candidate_text_matches_the_winning_code(self):
+        from contracts import ParsedDate
+        later = person(record_ids=("CUS-00000A",), vname="Maria Garcia", vdob=ParsedDate(1990, 1, 1),
+                       countries=(("Spain", "CUS-00000A"),))
+        first = person(record_ids=("CUS-00000B",), names=("Other Person",), countries=(("Portugal", "CUS-00000B"),))
+        h = hit(names=("Maria Garcia",), specs=[listed("1970-01-01")], countries=("France",))
+        row = reason(h, first, later)
+        self.assertEqual(row.reason_code, "DOB_MISMATCH")
+        self.assertIn("date of birth", row.reason)
+        self.assertNotIn("Portugal", row.reason)
+
+
 class EveryPathIsWellFormed(unittest.TestCase):
     """Every decision path yields 1-4 sentences, no template leaks, and IDs that are cited."""
 
