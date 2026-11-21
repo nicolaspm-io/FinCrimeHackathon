@@ -99,7 +99,7 @@ class Data:
                 found.append((None, f"email {alert['email']} -> NOT FOUND in customers"))
         return found
 
-    def loose_candidates(self, alert, limit=12):
+    def loose_candidates(self, alert, limit=20):
         """Records whose name parts overlap the screened name (exact or <=2 edits), ranked.
         Deliberately wide; the screened DOB/country/city are printed for the reviewer to judge."""
         screened = alert["customer"]
@@ -119,6 +119,8 @@ class Data:
             cdob = parse_date(c.get("dob"))
             if sdob and cdob and sdob[0] == cdob[0]:
                 bonus += 2
+                if all(a is None or b is None or a == b for a, b in zip(sdob[1:], cdob[1:])):
+                    bonus += 3  # equal in every part both give (POLICY 2)
             if screened.get("city") and screened["city"].lower() in ((c.get("city") or "") + " " + (c.get("address") or "")).lower():
                 bonus += 1
             if c.get("entity_type") == screened.get("entity_type"):
@@ -191,12 +193,12 @@ def customer_names(pic):
     return [n for n in dict.fromkeys(names) if n]
 
 
-def dossier(data, hit_id, all_notes=False, expand_related=True):
+def dossier(data, hit_id, all_notes=False, expand_related=True, limit=20):
     hit = data.hits[hit_id]
     alert = data.alerts.get(hit["alert_id"], {})
     linked = data.linked_customers(alert) if alert else []
     rids = [rid for rid, _ in linked if rid]
-    loose = [] if rids else data.loose_candidates(alert)
+    loose = [] if rids else data.loose_candidates(alert, limit)
     candidates = list(dict.fromkeys(rids + [rid for _, rid in loose]))
     pictures = {rid: data.picture(rid) for rid in candidates}
     related_pictures = {}
@@ -269,7 +271,7 @@ def render(dos):
     for rid, how in dos["linked"] or [(None, "alert carries no link")]:
         out.append(f"    {how}")
     if dos["loose"]:
-        out.append("    LOOSE name candidates (no usable link; ranked by name-part overlap + dob-year/city/type bonus — judge them yourself):")
+        out.append("    LOOSE name candidates (no usable link; ranked by name-part overlap + dob/city/type bonus — judge them yourself; raise --candidates if the list looks cut off):")
         for score, rid in dos["loose"]:
             out.append(f"      score {score}: {rid}")
     out.append("CUSTOMER PICTURES:")
@@ -294,6 +296,7 @@ def main():
     ap.add_argument("ids", nargs="+", help="hit IDs (H-...) or alert IDs (A-..., expands to its hits)")
     ap.add_argument("--json", action="store_true", help="machine-readable output")
     ap.add_argument("--all-notes", action="store_true", help="also show routine service notes")
+    ap.add_argument("--candidates", type=int, default=20, help="max loose name candidates for no-link alerts")
     args = ap.parse_args()
     data = Data(args.data_dir)
     hit_ids = []
@@ -305,7 +308,7 @@ def main():
         else:
             sys.exit(f"unknown id {i}")
     for hid in hit_ids:
-        dos = dossier(data, hid, args.all_notes)
+        dos = dossier(data, hid, args.all_notes, limit=args.candidates)
         if args.json:
             dos["search_results"] = [s for _, s in dos["search_results"]]
             print(json.dumps(dos, ensure_ascii=False, default=list))

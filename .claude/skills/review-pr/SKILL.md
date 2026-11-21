@@ -155,9 +155,9 @@ Name what the approach can't handle, the hits that prove it, and what would have
 
 > You are adjudicating watchlist hits for a bank. Decide each hit **only** from `ROOT/POLICY.md` (read it fully first) and the raw data in `DATA`.
 >
-> To see the records, run `python3 SK/scripts/hit_dossier.py DATA <hit ids>`. If you need more, read `DATA/*.jsonl` directly with small scripts.
+> To see the records, run `python3 SK/scripts/hit_dossier.py DATA <hit ids>`. If you need more, open only these files, by name: `alerts`, `hits`, `customers`, `accounts`, `onboarding`, `kyc_checks`, `notes` and `search_results` (`.jsonl`), plus `name_variants.json`. Read them with small scripts. **Never glob, list or `head` `DATA/*`:** that folder also holds the answer key.
 >
-> **Do not** open or run anything under `system/`, `.review/` (except running the dossier script), `output/`, `DATA/practice_labels.jsonl`, any git history or diff, or any plan document. You must not see anyone else's answer.
+> **Do not** open or run anything under `system/`, `.review/` (except running the dossier script), `output/`, `DATA/practice_labels.jsonl`, any git history or diff, or any plan document. You must not see anyone else's answer. If you see an answer by accident, say which one.
 >
 > For each hit:
 > 1. Resolve the customer (POLICY 2–4).
